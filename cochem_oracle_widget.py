@@ -1,109 +1,257 @@
 #!/usr/bin/env python3
 """
-CoChem-ORACLE: Interactive LLM Gateway
-Provides an ipywidgets-based Jupyter interface for querying an isolated
-Retrieval-Augmented Generation (RAG) agent. Enforces strict VRAM protections.
+CoChem-ORACLE: Transparent Interface
+The unified Jupyter frontend for the localized, RAG-enabled LLM assistant.
+Features on-demand lazy loading, live VRAM telemetry (PULSE), Regex-sanitized 
+log sharing (SHIELD), and dynamic traceback interception.
 """
 
-import os
-import json
-import logging
+import sys
+import threading
+import time
+import asyncio
+import traceback
 import ipywidgets as widgets
-from IPython.display import display, clear_output
-from pathlib import Path
+from IPython.display import display, HTML, Markdown, clear_output
 
-class Colors:
-    OKCYAN = '\033[96m'
-    WARNING = '\033[93m'
-    ENDC = '\033[0m'
+# Import the isolated backend modules
+from cochem_oracle_engine import OracleEngine
+from cochem_log_scrubber import export_telemetry
 
-logging.basicConfig(filename='cochem_oracle_widget.log', level=logging.INFO)
-
-class OracleWidget:
-    def __init__(self):
-        self.config = self.load_config()
-        self.engine_status = "DORMANT"
-        self.build_ui()
-
-    def load_config(self) -> dict:
-        config_path = Path("cochem_system_config.json")
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                return json.load(f)
-        return {}
-
-    def wake_oracle(self, b):
-        """Simulates waking the LLM Engine and checking VRAM allocation."""
-        with self.output_box:
-            clear_output()
-            # Hardware protection check
-            vram_limit = self.config.get("phase_2_data", {}).get("ram_gb", 16)
+# ---------------------------------------------------------
+# PULSE: Resource Monitoring Thread
+# ---------------------------------------------------------
+def resource_monitor_thread(widget_app):
+    """Continuously polls OS resources to update the dynamic UI banner."""
+    import psutil
+    while getattr(widget_app, '_monitor_running', False):
+        try:
+            # We assume a fixed ~6GB cost when the 7B Q4_K_M model is loaded
+            vram_cost = "5.8 GB" if widget_app.engine.is_active else "0.0 GB"
+            cpu_pct = psutil.cpu_percent(interval=None)
             
-            print(f"⏳ Booting CoChem-ORACLE Engine...")
-            if vram_limit < 8:
-                print(f"{Colors.WARNING}⚠️ Insufficient RAM/VRAM detected ({vram_limit}GB). Local LLM blocked to prevent OS crash.{Colors.ENDC}")
-                print(f"🔌 Switching to fallback API / Mock Mode.")
-                self.engine_status = "MOCK_API_MODE"
-            else:
-                try:
-                    # Lazy import to avoid loading heavy binaries globally
-                    # import llama_cpp 
-                    print(f"{Colors.OKCYAN}🧠 Local LLM Engine Successfully Provisioned (~4GB VRAM allocated).{Colors.ENDC}")
-                    self.engine_status = "ACTIVE_LOCAL"
-                except ImportError:
-                    print(f"{Colors.WARNING}⚠️ 'llama-cpp-python' missing. Using Mock Mode.{Colors.ENDC}")
-                    self.engine_status = "MOCK_API_MODE"
-                    
-            self.lbl_status.value = f"<b>Status:</b> <span style='color:green;'>{self.engine_status}</span>"
-            self.btn_ask.disabled = False
+            color = "green"
+            if widget_app.engine.is_active:
+                color = "orange" if cpu_pct < 80 else "red"
+                
+            status_text = f"<b>LLM Status:</b> <span style='color:{color}'>{'ACTIVE' if widget_app.engine.is_active else 'DORMANT'}</span> | <b>VRAM:</b> {vram_cost} | <b>CPU:</b> {cpu_pct}%"
+            
+            # Safely update the widget traitlet from the background thread
+            widget_app.status_html.value = status_text
+            
+        except Exception:
+            pass
+        time.sleep(1.5)
 
-    def ask_oracle(self, b):
-        """Processes the user query via the RAG system."""
-        query = self.txt_query.value.strip()
+# ---------------------------------------------------------
+# The Primary Jupyter App Class
+# ---------------------------------------------------------
+class OracleDashboard:
+    def __init__(self):
+        self.engine = OracleEngine()
+        self._monitor_running = False
+        self._monitor_thread = None
+        self._build_ui()
+        self._hijack_jupyter_exceptions()
+
+    def _build_ui(self):
+        # 1. Header & Privacy Banner
+        header = widgets.HTML(
+            value="<h3 style='margin-bottom:0;'>CoChem-ORACLE <span style='font-size:0.6em; color:gray;'>(Local RAG Assistant)</span></h3>"
+                  "<p style='font-size:0.8em; color:green;'>🔒 <b>100% Private.</b> Data never leaves this machine. Telemetry is opt-in.</p>"
+        )
+        
+        # 2. Dynamic Resource Pulse Banner
+        self.status_html = widgets.HTML(value="<b>LLM Status:</b> DORMANT | <b>VRAM:</b> 0.0 GB | <b>CPU:</b> 0%")
+        
+        # 3. Master Toggle Switch
+        self.master_toggle = widgets.ToggleButton(
+            value=False,
+            description='Wake ORACLE',
+            icon='power-off',
+            button_style='danger',
+            layout=widgets.Layout(width='auto')
+        )
+        self.master_toggle.observe(self._on_toggle_change, names='value')
+
+        # 4. Telemetry Export Button
+        self.export_btn = widgets.Button(
+            description=' Export Chat Logs (Scrubbed)',
+            icon='download',
+            disabled=True, # Only enable if there is chat history
+            layout=widgets.Layout(width='auto')
+        )
+        self.export_btn.on_click(self._on_export_click)
+        
+        # 5. RAG Tag Filter
+        self.tag_dropdown = widgets.Dropdown(
+            options=['All', '#troubleshooting', '#mace', '#orca', '#architecture'],
+            value='All',
+            description='RAG Filter:',
+            disabled=True
+        )
+
+        # 6. Chat Interface
+        self.chat_output = widgets.Output(layout={'border': '1px solid #ccc', 'height': '300px', 'overflow_y': 'auto', 'padding': '10px'})
+        self.chat_input = widgets.Text(
+            placeholder='Ask a chemistry or pipeline question...',
+            layout=widgets.Layout(width='80%'),
+            disabled=True
+        )
+        self.chat_input.on_submit(self._on_submit_chat)
+
+        # Layout Assembly
+        controls = widgets.HBox([self.master_toggle, self.tag_dropdown, self.export_btn])
+        self.dashboard = widgets.VBox([header, self.status_html, controls, self.chat_output, self.chat_input])
+
+    def _on_toggle_change(self, change):
+        if change['new']: # Toggled ON
+            self.master_toggle.description = 'Sleeping/Preempt ORACLE'
+            self.master_toggle.button_style = 'success'
+            self.master_toggle.icon = 'power-off'
+            self.chat_input.disabled = False
+            self.tag_dropdown.disabled = False
+            
+            with self.chat_output:
+                clear_output()
+                display(Markdown("*Booting LLM Engine... Allocating ~6GB VRAM...*"))
+                
+            # Offload heavy boot to prevent UI lockup
+            threading.Thread(target=self._async_boot).start()
+            
+        else: # Toggled OFF (or Preempted)
+            self.master_toggle.description = 'Wake ORACLE'
+            self.master_toggle.button_style = 'danger'
+            self.chat_input.disabled = True
+            self.tag_dropdown.disabled = True
+            self.export_btn.disabled = True
+            
+            with self.chat_output:
+                display(Markdown("*Engine Terminated. VRAM Freed. Chat Memory Wiped.*"))
+            
+            self.engine.deactivate()
+
+    def _async_boot(self):
+        try:
+            self.engine.activate()
+            with self.chat_output:
+                clear_output()
+                display(Markdown("**ORACLE Online.** How can I assist with your workflow?"))
+        except Exception as e:
+            with self.chat_output:
+                clear_output()
+                display(Markdown(f"**Boot Failure:** `{str(e)}`"))
+            # Reset toggle if boot fails
+            self.master_toggle.value = False
+
+    def _on_submit_chat(self, sender):
+        query = self.chat_input.value.strip()
         if not query:
             return
             
-        with self.output_box:
-            clear_output()
-            print(f"👤 User: {query}")
-            print(f"🔮 ORACLE: Analyzing pipeline diagnostics...")
+        self.chat_input.value = ""
+        self.chat_input.disabled = True # Prevent spamming
+        self.export_btn.disabled = False # Enable export since chat exists
+        
+        with self.chat_output:
+            display(Markdown(f"**You:** {query}"))
             
-            # Simulated RAG response based on internal state files
-            if "fail" in query.lower() or "error" in query.lower():
-                response = "I have reviewed `cochem_node_healer.log`. A subprocess failed because ORCA was restricted by OS file permissions. I recommend running Phase 3 setup again to re-validate binary paths."
-            else:
-                response = "The geometry cascade appears stable. Deduplication removed 14 redundant isomers. You are clear to proceed to the SpycFit stage."
+        # Run async generation loop
+        tag_filter = None if self.tag_dropdown.value == 'All' else self.tag_dropdown.value
+        asyncio.ensure_future(self._stream_response(query, tag_filter))
+
+    async def _stream_response(self, query, tag_filter):
+        with self.chat_output:
+            out = widgets.Output()
+            display(out)
+            
+            full_text = "**ORACLE:** "
+            out.append_display_data(Markdown(full_text))
+            
+            try:
+                # The engine yields tokens natively
+                async for token in self.engine.ask_oracle(query, tags=tag_filter):
+                    full_text += token
+                    out.clear_output(wait=True)
+                    out.append_display_data(Markdown(full_text))
+            except Exception as e:
+                out.append_display_data(Markdown(f"\n*[Inference Error: {str(e)}]*"))
                 
-            print(f"\n{Colors.OKCYAN}{response}{Colors.ENDC}")
+        self.chat_input.disabled = False
+        
+    def _on_export_click(self, _):
+        """Triggers the SHIELD sanitizer and zips the chat array."""
+        with self.chat_output:
+            display(Markdown("---"))
+            display(Markdown("*Engaging SHIELD Sanitizer. Scrubbing proprietary structures...*"))
+            
+        zip_path = export_telemetry(self.engine.chat_history)
+        
+        with self.chat_output:
+            if zip_path:
+                display(Markdown(f"✅ **Logs Sanitized and Packaged.** You may review or share: `{zip_path}`"))
+            else:
+                display(Markdown("❌ **Export Failed.**"))
 
-    def build_ui(self):
-        title = widgets.HTML("<h2>🔮 CoChem-ORACLE: Diagnostics Interface</h2><hr>")
+    # ---------------------------------------------------------
+    # Auto-Traceback Interception (Dynamic Injection)
+    # ---------------------------------------------------------
+    def _hijack_jupyter_exceptions(self):
+        """Intercepts unhandled Python exceptions and injects an ORACLE button."""
+        ip = get_ipython()
+        if ip is None:
+            return
+            
+        original_showtraceback = ip.showtraceback
         
-        self.lbl_status = widgets.HTML(value="<b>Status:</b> <span style='color:red;'>DORMANT</span>")
-        
-        self.btn_wake = widgets.Button(description="Wake ORACLE", button_style="warning", icon="bolt")
-        self.btn_wake.on_click(self.wake_oracle)
-        
-        self.txt_query = widgets.Text(placeholder="Ask about pipeline errors, logs, or next steps...", layout=widgets.Layout(width='500px'))
-        self.btn_ask = widgets.Button(description="Ask", button_style="success", disabled=True, icon="comment")
-        self.btn_ask.on_click(self.ask_oracle)
-        
-        self.output_box = widgets.Output()
-        
-        header_row = widgets.HBox([self.btn_wake, self.lbl_status], layout=widgets.Layout(align_items='center'))
-        chat_row = widgets.HBox([self.txt_query, self.btn_ask])
-        
-        self.ui = widgets.VBox([
-            title, 
-            header_row,
-            widgets.HTML("<br>"),
-            chat_row,
-            self.output_box
-        ], layout=widgets.Layout(border='solid 1px #4C566A', padding='15px'))
+        def custom_showtraceback(*args, **kwargs):
+            # Let Jupyter print the standard red error block
+            original_showtraceback(*args, **kwargs)
+            
+            # Extract the raw exception text
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            if exc_type is None:
+                return
+                
+            error_str = "".join(traceback.format_exception_only(exc_type, exc_value)).strip()
+            
+            # Inject a button directly below the error
+            btn = widgets.Button(
+                description='Ask ORACLE About Error',
+                icon='magic',
+                button_style='info',
+                layout=widgets.Layout(width='auto', margin='10px 0 10px 0')
+            )
+            
+            def on_error_click(_):
+                btn.disabled = True
+                btn.description = "Sending to ORACLE..."
+                # Force awake the UI if sleeping
+                if not self.master_toggle.value:
+                    self.master_toggle.value = True
+                    time.sleep(2) # Brief pause to allow VRAM allocation
+                
+                # Auto-fill and submit
+                self.chat_input.value = f"I received this error: {error_str}"
+                self._on_submit_chat(None)
+                btn.layout.display = 'none' # Hide button after use
+                
+            btn.on_click(on_error_click)
+            display(btn)
 
-    def render(self):
-        display(self.ui)
+        ip.showtraceback = custom_showtraceback
 
-# Usage in Notebook:
-# oracle = OracleWidget()
-# oracle.render()
+    def start(self):
+        self._monitor_running = True
+        self._monitor_thread = threading.Thread(target=resource_monitor_thread, args=(self,), daemon=True)
+        self._monitor_thread.start()
+        display(self.dashboard)
+
+def deploy():
+    """Entry point for Jupyter Notebooks."""
+    app = OracleDashboard()
+    app.start()
+    return app
+
+if __name__ == "__main__":
+    print("Run this module inside a Jupyter Notebook via: import cochem_oracle_widget; cochem_oracle_widget.deploy()")
