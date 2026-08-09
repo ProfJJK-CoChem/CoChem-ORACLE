@@ -20,6 +20,21 @@ class OracleOrchestrator:
         self.config = self._load_config()
         self.is_initialized = False
         
+    def _get_artifact_dir(self) -> str:
+        """Get the artifact directory for reproducible research.
+        
+        Returns:
+            str: The path to the artifact directory, using environment variable 
+                 or defaulting to home directory.
+        """
+        # Check if ARTIFACTS_DIR environment variable is set
+        artifacts_dir = os.environ.get('ARTIFACTS_DIR')
+        if artifacts_dir:
+            return artifacts_dir
+        
+        # Fallback to home directory
+        return os.path.join(os.path.expanduser("~"), "CoChem", "artifacts")
+        
     def _load_config(self) -> dict:
         """Load configuration from JSON file."""
         try:
@@ -28,10 +43,11 @@ class OracleOrchestrator:
         except FileNotFoundError:
             print(f"⚠️  Configuration file {self.config_file} not found")
             # Return default config
+            artifact_dir = self._get_artifact_dir()
             return {
                 "project_name": "CoChem-ORACLE",
                 "version": "0.1.0",
-                "data_dir": "./cochem_oracle_data"
+                "data_dir": os.path.join(artifact_dir, "ORACLE", "data")
             }
         except json.JSONDecodeError as e:
             print(f"❌ Error loading configuration: {e}")
@@ -41,8 +57,9 @@ class OracleOrchestrator:
         """Initialize the ORACLE system."""
         print("🚀 Initializing CoChem-ORACLE System...")
         
-        # Create data directories
-        data_dir = Path(self.config.get('data_dir', './cochem_oracle_data'))
+        # Create data directories using artifact directory for reproducible research
+        artifact_dir = self._get_artifact_dir()
+        data_dir = Path(self.config.get('data_dir', os.path.join(artifact_dir, "ORACLE", "data")))
         data_dir.mkdir(parents=True, exist_ok=True)
         
         # Create subdirectories for different modules

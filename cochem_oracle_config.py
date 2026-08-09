@@ -5,6 +5,7 @@ Handles all configuration settings for the ORACLE system.
 """
 
 import json
+import os
 from pathlib import Path
 
 class OracleConfig:
@@ -16,6 +17,21 @@ class OracleConfig:
         """Initialize configuration."""
         self.config_file = config_file
         self.config = self._load_config()
+        
+    def _get_artifact_dir(self) -> str:
+        """Get the artifact directory for reproducible research.
+        
+        Returns:
+            str: The path to the artifact directory, using environment variable 
+                 or defaulting to home directory.
+        """
+        # Check if ARTIFACTS_DIR environment variable is set
+        artifacts_dir = os.environ.get('ARTIFACTS_DIR')
+        if artifacts_dir:
+            return artifacts_dir
+        
+        # Fallback to home directory
+        return os.path.join(os.path.expanduser("~"), "CoChem", "artifacts")
         
     def _load_config(self) -> dict:
         """Load configuration from file."""
@@ -31,10 +47,11 @@ class OracleConfig:
             
     def _get_default_config(self) -> dict:
         """Get default configuration values."""
+        artifact_dir = self._get_artifact_dir()
         return {
             "project_name": "CoChem-ORACLE",
             "version": "0.1.0",
-            "data_dir": "./cochem_oracle_data",
+            "data_dir": os.path.join(artifact_dir, "ORACLE", "data"),
             "knowledge_sources": {
                 "primary_db": {"enabled": True, "url": "localhost:5432/cochem"},
                 "external_api": {"enabled": True, "url": "https://api.example.com"}
@@ -45,13 +62,13 @@ class OracleConfig:
                 "timeout_seconds": 300
             },
             "caching": {
-                "enable_cache": true,
+                "enable_cache": True,
                 "cache_ttl_hours": 24,
                 "max_cache_size_mb": 1000
             },
             "logging": {
                 "level": "INFO",
-                "file": "./oracle.log"
+                "file": os.path.join(artifact_dir, "ORACLE", "oracle.log")
             }
         }
         
