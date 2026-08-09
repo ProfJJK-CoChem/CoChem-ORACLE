@@ -64,16 +64,50 @@ def write_final_config(state: Dict) -> None:
 # MACE CHECKER & MEMORY ESTIMATORS (STUBS FOR ROUTING)
 # ---------------------------------------------------------
 
+def _query_nvidia_smi_vram() -> float:
+    """Queries nvidia-smi for total GPU VRAM in GB via XML output (MOCK-20, Suggestion 78)."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # nvidia-smi returns MiB; convert to GiB
+            total_mib = float(result.stdout.strip().split("\n")[0])
+            return round(total_mib / 1024.0, 2)
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError) as err:
+        logging.debug(f"nvidia-smi VRAM query failed: {err}")
+    return 0.0
+
+
 def get_system_vram() -> float:
-    """Retrieves physical GPU VRAM limits dynamically via PyTorch if available (ORACLE-16)."""
+    """Retrieves physical GPU VRAM limits dynamically (MOCK-20, Suggestion 78).
+    
+    Priority chain:
+      1. PyTorch CUDA (most accurate when available)
+      2. nvidia-smi subprocess query (no PyTorch dependency)
+      3. 0.0 GB fallback (no GPU detected)
+    """
+    # Attempt 1: PyTorch CUDA
     try:
         import torch
         if torch.cuda.is_available():
             total_bytes = torch.cuda.get_device_properties(0).total_memory
-            return round(total_bytes / (1024 ** 3), 2)
+            vram_gb = round(total_bytes / (1024 ** 3), 2)
+            logging.debug(f"VRAM detected via PyTorch: {vram_gb} GB")
+            return vram_gb
     except Exception as err:
-        logging.debug(f"VRAM query exception: {err}")
-    return 24.0
+        logging.debug(f"PyTorch VRAM query exception: {err}")
+
+    # Attempt 2: nvidia-smi subprocess
+    smi_vram = _query_nvidia_smi_vram()
+    if smi_vram > 0.0:
+        logging.debug(f"VRAM detected via nvidia-smi: {smi_vram} GB")
+        return smi_vram
+
+    # Attempt 3: No GPU detected — safe fallback to 0.0
+    logging.info("No GPU detected (PyTorch and nvidia-smi both unavailable). VRAM set to 0.0 GB.")
+    return 0.0
 
 def calculate_theoretical_vram(num_atoms: int, method: str) -> float:
     """Estimates GBs of VRAM needed based on matrix dimensions."""
@@ -91,35 +125,63 @@ def verify_mace_compatibility(registry: dict) -> bool:
 
 def preempt_oracle_llm() -> bool:
     """
-    Terminates any active ORACLE LLM process using the PID file to free VRAM (ORACLE-17).
+    Preempts the ORACLE LLM process to free GPU VRAM for ORCA/MACE (Suggestion 81).
+    
+    Strategy: Sends SIGTERM to allow graceful LLM unload from GPU to CPU,
+    then waits briefly. Falls back to hard termination if graceful shutdown fails.
     """
     home_dir = os.path.expanduser("~")
     pid_file = os.path.join(home_dir, ".cochem", "silos", "oracle", "oracle_engine.pid")
     
     if not os.path.exists(pid_file):
+        logging.debug("No ORACLE PID file found — nothing to preempt.")
         return False
         
     try:
         with open(pid_file, "r") as f:
-            pid = int(f.read().strip())
+            pid_str = f.read().strip()
+            if not pid_str:
+                logging.warning("ORACLE PID file is empty.")
+                return False
+            pid = int(pid_str)
             
-        if psutil.pid_exists(pid):
-            proc = psutil.Process(pid)
-            proc.terminate()
+        if not psutil.pid_exists(pid):
+            logging.info(f"ORACLE process (PID {pid}) no longer running. Cleaning up PID file.")
+            _cleanup_pid_file(pid_file)
+            return False
+
+        proc = psutil.Process(pid)
+        
+        # Graceful termination — allows engine to unload model from VRAM
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+            print_status(f"ORACLE LLM gracefully preempted (PID {pid}). GPU VRAM freed.", "warning")
+        except psutil.TimeoutExpired:
+            # Force kill if graceful shutdown fails
+            proc.kill()
             proc.wait(timeout=3)
-            print_status(f"Preempted ORACLE process (PID {pid}) to claim VRAM.", "warning")
+            print_status(f"ORACLE LLM force-killed (PID {pid}) after graceful timeout.", "warning")
             
-        if os.path.exists(pid_file):
-            os.remove(pid_file)
+        _cleanup_pid_file(pid_file)
         return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        logging.warning(f"ORACLE preemption skipped (process issue): {e}")
+        _cleanup_pid_file(pid_file)
+        return False
     except Exception as e:
         print_status(f"Failed to preempt ORACLE process: {e}", "warning")
-        if os.path.exists(pid_file):
-            try:
-                os.remove(pid_file)
-            except OSError as err:
-                logging.debug(f"PID file deletion skipped: {err}")
+        _cleanup_pid_file(pid_file)
         return False
+
+
+def _cleanup_pid_file(pid_file: str) -> None:
+    """Safely removes the ORACLE PID file."""
+    try:
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+    except OSError as err:
+        logging.debug(f"PID file deletion skipped: {err}")
 
 def hardware_aware_router(num_atoms: int, registry: dict) -> str:
     """ 

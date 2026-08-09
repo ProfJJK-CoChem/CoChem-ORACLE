@@ -12,7 +12,7 @@ import asyncio
 import logging
 import concurrent.futures
 from pathlib import Path
-from typing import List, Dict, Optional, AsyncGenerator
+from typing import List, Dict, Optional, AsyncGenerator, Any
 
 # Core Paths resolved dynamically (ORACLE-01, ORACLE-02)
 HOME_DIR = os.path.expanduser("~")
@@ -27,6 +27,7 @@ def get_vault_dir() -> str:
 VAULT_DIR = get_vault_dir()
 PID_FILE = os.path.join(HOME_DIR, ".cochem", "silos", "oracle", "oracle_engine.pid")
 CONFIG_PATH = str(BASE_DIR / "cochem_system_config.json")
+ORACLE_CONFIG_PATH = str(BASE_DIR / "oracle_config.json")
 
 class OracleEngine:
     def __init__(self):
@@ -35,6 +36,7 @@ class OracleEngine:
         self.chat_history: List[Dict[str, str]] = []
         self.model_path = self._get_model_path()
         self._executor = None
+        self._oracle_cfg = self._load_oracle_config()
         
         # System Prompt enforcing rigorous citation and behavior
         self.system_prompt = (
@@ -52,6 +54,15 @@ class OracleEngine:
                 return registry.get("silo_registry", {}).get("oracle_model", "")
         except (FileNotFoundError, json.JSONDecodeError):
             return ""
+
+    def _load_oracle_config(self) -> Dict[str, Any]:
+        """Loads oracle_config.json for LLM-specific settings (seed, temperature, etc.)."""
+        try:
+            with open(ORACLE_CONFIG_PATH, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logging.debug(f"oracle_config.json not found or invalid ({e}), using defaults.")
+            return {}
 
     def _write_pid(self):
         """Writes the current OS Process ID so the preemption hook can kill it if needed."""
@@ -81,18 +92,27 @@ class OracleEngine:
             Llama = None
 
         if Llama is None or not self.model_path or not os.path.exists(self.model_path):
-            print(f"⚠️ Warning: Model path '{self.model_path}' not found or LLM unavailable. Operating in RAG-only fallback mode.")
+            reason = "llama-cpp-python not installed" if Llama is None else f"model file not found at '{self.model_path}'"
+            print(f"⚠️ Warning: {reason}. Operating in RAG-only fallback mode.")
+            logging.info(f"ORACLE activated in RAG-only fallback mode (reason: {reason}).")
             self.is_active = True
             self._write_pid()
             self.chat_history = [{"role": "system", "content": self.system_prompt}]
             return True
 
         try:
+            # Read seed from oracle_config.json; default -1 = random/non-deterministic (MOCK-19)
+            configured_seed = self._oracle_cfg.get("seed", -1)
+            if not isinstance(configured_seed, int):
+                logging.warning(f"Invalid seed type in oracle_config.json: {type(configured_seed).__name__}. Falling back to -1 (random).")
+                configured_seed = -1
+            logging.info(f"ORACLE LLM seed: {configured_seed} ({'random' if configured_seed == -1 else 'deterministic'})")
+
             self.llm = Llama(
                 model_path=self.model_path,
                 n_gpu_layers=-1, # Offload all layers to GPU
                 n_ctx=4096,      # Context window size
-                seed=42,         # Lock generation determinism
+                seed=configured_seed,  # From oracle_config.json (MOCK-19)
                 verbose=False    # Suppress C++ backend logging in Jupyter
             )
             self.is_active = True
@@ -149,6 +169,7 @@ class OracleEngine:
             return "\n".join(context_blocks)
             
         except Exception as e:
+            logging.warning(f"VAULT query failed: {e}")
             return f"[VAULT ERROR: Local knowledge base unreachable - {str(e)}]"
 
     def _query_vault_with_timeout(self, query: str, metadata_filter: Optional[str] = None) -> str:
@@ -161,6 +182,29 @@ class OracleEngine:
             return future.result(timeout=3.0)
         except concurrent.futures.TimeoutError:
             return "[VAULT ERROR: Timeout exceeded 3.0s. Re-index VAULT.]"
+
+    def _render_rag_fallback(self, query: str, context_str: str) -> str:
+        """Renders a structured local RAG summary when LLM model is unavailable (MOCK-18, Suggestion 76)."""
+        header = "## ORACLE RAG-Only Response\n\n"
+        header += "*LLM model is not loaded. Showing documentation-grounded context only.*\n\n"
+
+        if not context_str or context_str.startswith("[VAULT ERROR"):
+            return (
+                header
+                + "**No relevant documentation context found for your query.**\n\n"
+                + f"**Query:** {query}\n\n"
+                + "> To enable full LLM inference, ensure a valid GGUF model path is set in "
+                + "`cochem_system_config.json` under `silo_registry.oracle_model`.\n"
+            )
+
+        return (
+            header
+            + f"**Query:** {query}\n\n"
+            + "### Retrieved Documentation Context\n\n"
+            + context_str + "\n\n"
+            + "---\n"
+            + "*End of RAG-only response. Install and configure a GGUF model for full LLM inference.*\n"
+        )
 
     async def ask_oracle(self, user_query: str, tags: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Streams the LLM response asynchronously to prevent Jupyter UI lockups."""
@@ -179,8 +223,8 @@ class OracleEngine:
         self.chat_history.append({"role": "user", "content": augmented_query})
         
         if self.llm is None:
-            # RAG-only fallback response if model is not loaded
-            resp = f"Based on local context:\n{context_str}\n\n[Model file not loaded]"
+            # Structured RAG-only fallback when LLM model is unavailable (MOCK-18, Suggestion 76)
+            resp = self._render_rag_fallback(user_query, context_str)
             self.chat_history.append({"role": "assistant", "content": resp})
             yield resp
             return
