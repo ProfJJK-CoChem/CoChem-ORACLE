@@ -13,6 +13,12 @@ import zipfile
 import datetime
 from typing import List, Dict
 
+try:
+    from rdkit import Chem
+    RDKIT_AVAILABLE = True
+except ImportError:
+    RDKIT_AVAILABLE = False
+
 class Colors:
     OKCYAN = '\033[96m'
     OKGREEN = '\033[92m'
@@ -34,31 +40,42 @@ def print_status(msg: str, status: str = "info") -> None:
 class TelemetrySanitizer:
     def __init__(self):
         # 1. Matches standard XYZ coordinate lines: C  -1.23456  0.00000  2.34567
-        # Assumes at least 3 decimal places to distinguish from general version numbers.
         self.xyz_pattern = re.compile(
             r'([A-Za-z]{1,2})\s+(-?\d+\.\d{3,})\s+(-?\d+\.\d{3,})\s+(-?\d+\.\d{3,})'
         )
         
-        # 2. Matches ORCA coordinate blocks: * xyz 0 1 ... * self.orca_block_pattern = re.compile(
+        # 2. Matches ORCA coordinate blocks (Fixed syntax bug: un-commented definition) (ORACLE-13)
+        self.orca_block_pattern = re.compile(
             r'(\*\s*xyz.*?\n)(.*?)(\*)', re.DOTALL | re.IGNORECASE
         )
         
-        # 3. Matches dense SMILES-like strings (Heuristic: >8 chars, contains chemical brackets/symbols)
+        # 3. Refined SMILES pattern requiring explicit ring numbers, bonds, or brackets (ORACLE-14)
         self.smiles_pattern = re.compile(
-            r'\b([B,C,N,O,P,S,F,Cl,Br,I,c,n,o,s,p]+[\(\)\[\]\=\#]+[A-Za-z0-9\(\)\[\]\=\#\+\-\.\@\:\\]{4,})\b'
+            r'\b([B,C,N,O,P,S,F,Cl,Br,I,c,n,o,s,p]+[\(\)\[\]\=\#\@\+\-\\\/0-9]{3,}[A-Za-z0-9\(\)\[\]\=\#\+\-\.\@\:\\\/]*)\b'
         )
         
-        # 4. Matches continuous block matrices of just floats (e.g., Hessian/Polarizability matrices)
+        # 4. Matches continuous block matrices of floats
         self.float_matrix_pattern = re.compile(
             r'(\s*-?\d+\.\d{4,}\s+){4,}'
         )
+
+    def _is_valid_smiles(self, candidate: str) -> bool:
+        """Validates SMILES candidate via RDKit if available (ORACLE-14)."""
+        if not RDKIT_AVAILABLE:
+            # Fallback heuristic: check for explicit bond/bracket/ring characters
+            return any(c in candidate for c in ['=', '#', '[', ']', '@', '\\', '/'])
+        try:
+            mol = Chem.MolFromSmiles(candidate)
+            return mol is not None
+        except Exception:
+            return False
 
     def sanitize_text(self, text: str) -> str:
         """Passes text through the Regex wall to strip proprietary data."""
         if not text:
             return text
             
-        # Strip ORCA Blocks
+        # Strip ORCA Blocks (ORACLE-13)
         clean_text = self.orca_block_pattern.sub(r'\1[REDACTED_GEOMETRY_BLOCK]\n\3', text)
         
         # Strip individual XYZ lines
@@ -67,8 +84,14 @@ class TelemetrySanitizer:
         # Strip dense matrix dumps
         clean_text = self.float_matrix_pattern.sub(r'\n[REDACTED_FLOAT_MATRIX]\n', clean_text)
         
-        # Strip SMILES-like strings
-        clean_text = self.smiles_pattern.sub(r'[REDACTED_SMILES_STRING]', clean_text)
+        # Strip SMILES strings with RDKit syntax validation (ORACLE-14)
+        def replace_smiles(match):
+            candidate = match.group(1)
+            if self._is_valid_smiles(candidate):
+                return '[REDACTED_SMILES_STRING]'
+            return match.group(0)
+
+        clean_text = self.smiles_pattern.sub(replace_smiles, clean_text)
         
         return clean_text
 
@@ -93,7 +116,7 @@ def export_telemetry(chat_history: List[Dict[str, str]], export_dir: str = None)
         
     os.makedirs(export_dir, exist_ok=True)
     
-    timestamp = datetime.datetime.now().strftime("%Y%md_%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     manifest_name = f"cochem_oracle_telemetry_{timestamp}.json"
     zip_name = f"cochem_oracle_telemetry_{timestamp}.zip"
     
@@ -112,17 +135,14 @@ def export_telemetry(chat_history: List[Dict[str, str]], export_dir: str = None)
     }
     
     try:
-        # Write the human-readable JSON Manifest first (for user review)
         with open(manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest_payload, f, indent=4)
         print_status(f"Manifest generated: {manifest_path}", "success")
         
-        # Package into a Zip file for sharing
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.write(manifest_path, arcname=manifest_name)
         print_status(f"Telemetry packaged successfully: {zip_path}", "success")
         
-        # Optionally clean up the raw json after zipping, but leaving it allows user inspection
         return zip_path
         
     except Exception as e:
@@ -132,7 +152,6 @@ def export_telemetry(chat_history: List[Dict[str, str]], export_dir: str = None)
 def main():
     print(f"\n{Colors.BOLD}--- CoChem-ORACLE: SHIELD Telemetry Test ---{Colors.ENDC}")
     
-    # Mock Data for testing the Regex Wall
     mock_chat = [
         {"role": "user", "content": "Why did my ORCA job fail? Here is my input:\n* xyz 0 1\nC -1.23456 0.12345 1.11111\nO 0.00000 1.23456 -1.22222\n*\nIt says SCF failed."},
         {"role": "oracle", "content": "It seems your geometry is poorly optimized. Try increasing SCF convergence."},

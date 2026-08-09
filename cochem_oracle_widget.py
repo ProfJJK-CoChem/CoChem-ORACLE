@@ -10,24 +10,51 @@ import sys
 import threading
 import time
 import asyncio
+import logging
 import traceback
 import ipywidgets as widgets
-from IPython.display import display, HTML, Markdown, clear_output
+from pathlib import Path
 
-# Import the isolated backend modules
-from cochem_oracle_engine import OracleEngine
-from cochem_log_scrubber import export_telemetry
+try:
+    from IPython.display import display, HTML, Markdown, clear_output
+    from IPython import get_ipython
+    HAS_IPYTHON = True
+except ImportError:
+    HAS_IPYTHON = False
+
+# Import the isolated backend modules with fallback handling (ORACLE-06)
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+try:
+    from cochem_oracle_engine import OracleEngine
+    from cochem_log_scrubber import export_telemetry
+except ImportError:
+    from CoChem_ORACLE.cochem_oracle_engine import OracleEngine
+    from CoChem_ORACLE.cochem_log_scrubber import export_telemetry
 
 # ---------------------------------------------------------
 # PULSE: Resource Monitoring Thread
 # ---------------------------------------------------------
+def get_dynamic_vram_telemetry() -> str:
+    """Queries PyTorch/CUDA VRAM usage dynamically (ORACLE-08)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            allocated_bytes = torch.cuda.memory_allocated(0)
+            allocated_gb = allocated_bytes / (1024 ** 3)
+            return f"{allocated_gb:.2f} GB"
+    except Exception as err:
+        logging.debug(f"VRAM telemetry query skipped: {err}")
+    return "0.0 GB"
+
 def resource_monitor_thread(widget_app):
-    """Continuously polls OS resources to update the dynamic UI banner."""
+    """Continuously polls OS resources to update the dynamic UI banner (ORACLE-08)."""
     import psutil
     while getattr(widget_app, '_monitor_running', False):
         try:
-            # We assume a fixed ~6GB cost when the 7B Q4_K_M model is loaded
-            vram_cost = "5.8 GB" if widget_app.engine.is_active else "0.0 GB"
+            vram_cost = get_dynamic_vram_telemetry() if widget_app.engine.is_active else "0.0 GB"
             cpu_pct = psutil.cpu_percent(interval=None)
             
             color = "green"
@@ -36,11 +63,11 @@ def resource_monitor_thread(widget_app):
                 
             status_text = f"<b>LLM Status:</b> <span style='color:{color}'>{'ACTIVE' if widget_app.engine.is_active else 'DORMANT'}</span> | <b>VRAM:</b> {vram_cost} | <b>CPU:</b> {cpu_pct}%"
             
-            # Safely update the widget traitlet from the background thread
+            # Safely update traitlet (ORACLE-09)
             widget_app.status_html.value = status_text
             
-        except Exception:
-            pass
+        except Exception as err:
+            logging.debug(f"Resource monitor update skipped: {err}")
         time.sleep(1.5)
 
 # ---------------------------------------------------------
@@ -78,7 +105,7 @@ class OracleDashboard:
         self.export_btn = widgets.Button(
             description=' Export Chat Logs (Scrubbed)',
             icon='download',
-            disabled=True, # Only enable if there is chat history
+            disabled=True,
             layout=widgets.Layout(width='auto')
         )
         self.export_btn.on_click(self._on_export_click)
@@ -114,12 +141,11 @@ class OracleDashboard:
             
             with self.chat_output:
                 clear_output()
-                display(Markdown("*Booting LLM Engine... Allocating ~6GB VRAM...*"))
+                display(Markdown("*Booting LLM Engine... Allocating VRAM...*"))
                 
-            # Offload heavy boot to prevent UI lockup
-            threading.Thread(target=self._async_boot).start()
+            threading.Thread(target=self._async_boot, daemon=True).start()
             
-        else: # Toggled OFF (or Preempted)
+        else: # Toggled OFF
             self.master_toggle.description = 'Wake ORACLE'
             self.master_toggle.button_style = 'danger'
             self.chat_input.disabled = True
@@ -133,15 +159,17 @@ class OracleDashboard:
 
     def _async_boot(self):
         try:
-            self.engine.activate()
+            success = self.engine.activate()
             with self.chat_output:
                 clear_output()
-                display(Markdown("**ORACLE Online.** How can I assist with your workflow?"))
+                if success:
+                    display(Markdown("**ORACLE Online.** How can I assist with your workflow?"))
+                else:
+                    display(Markdown("**ORACLE Online (RAG-only mode).** LLM binary dormant."))
         except Exception as e:
             with self.chat_output:
                 clear_output()
                 display(Markdown(f"**Boot Failure:** `{str(e)}`"))
-            # Reset toggle if boot fails
             self.master_toggle.value = False
 
     def _on_submit_chat(self, sender):
@@ -150,13 +178,12 @@ class OracleDashboard:
             return
             
         self.chat_input.value = ""
-        self.chat_input.disabled = True # Prevent spamming
-        self.export_btn.disabled = False # Enable export since chat exists
+        self.chat_input.disabled = True
+        self.export_btn.disabled = False
         
         with self.chat_output:
             display(Markdown(f"**You:** {query}"))
             
-        # Run async generation loop
         tag_filter = None if self.tag_dropdown.value == 'All' else self.tag_dropdown.value
         asyncio.ensure_future(self._stream_response(query, tag_filter))
 
@@ -169,7 +196,6 @@ class OracleDashboard:
             out.append_display_data(Markdown(full_text))
             
             try:
-                # The engine yields tokens natively
                 async for token in self.engine.ask_oracle(query, tags=tag_filter):
                     full_text += token
                     out.clear_output(wait=True)
@@ -180,7 +206,6 @@ class OracleDashboard:
         self.chat_input.disabled = False
         
     def _on_export_click(self, _):
-        """Triggers the SHIELD sanitizer and zips the chat array."""
         with self.chat_output:
             display(Markdown("---"))
             display(Markdown("*Engaging SHIELD Sanitizer. Scrubbing proprietary structures...*"))
@@ -194,61 +219,62 @@ class OracleDashboard:
                 display(Markdown("❌ **Export Failed.**"))
 
     # ---------------------------------------------------------
-    # Auto-Traceback Interception (Dynamic Injection)
+    # Auto-Traceback Interception (Dynamic Injection) (ORACLE-07)
     # ---------------------------------------------------------
     def _hijack_jupyter_exceptions(self):
-        """Intercepts unhandled Python exceptions and injects an ORACLE button."""
-        ip = get_ipython()
-        if ip is None:
+        """Intercepts unhandled Python exceptions gracefully inside Jupyter environments (ORACLE-07)."""
+        if not HAS_IPYTHON:
             return
-            
-        original_showtraceback = ip.showtraceback
-        
-        def custom_showtraceback(*args, **kwargs):
-            # Let Jupyter print the standard red error block
-            original_showtraceback(*args, **kwargs)
-            
-            # Extract the raw exception text
-            exc_type, exc_value, exc_tb = sys.exc_info()
-            if exc_type is None:
+
+        try:
+            ip = get_ipython()
+            if ip is None:
                 return
                 
-            error_str = "".join(traceback.format_exception_only(exc_type, exc_value)).strip()
+            original_showtraceback = ip.showtraceback
             
-            # Inject a button directly below the error
-            btn = widgets.Button(
-                description='Ask ORACLE About Error',
-                icon='magic',
-                button_style='info',
-                layout=widgets.Layout(width='auto', margin='10px 0 10px 0')
-            )
-            
-            def on_error_click(_):
-                btn.disabled = True
-                btn.description = "Sending to ORACLE..."
-                # Force awake the UI if sleeping
-                if not self.master_toggle.value:
-                    self.master_toggle.value = True
-                    time.sleep(2) # Brief pause to allow VRAM allocation
+            def custom_showtraceback(*args, **kwargs):
+                original_showtraceback(*args, **kwargs)
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                if exc_type is None:
+                    return
+                    
+                error_str = "".join(traceback.format_exception_only(exc_type, exc_value)).strip()
                 
-                # Auto-fill and submit
-                self.chat_input.value = f"I received this error: {error_str}"
-                self._on_submit_chat(None)
-                btn.layout.display = 'none' # Hide button after use
+                btn = widgets.Button(
+                    description='Ask ORACLE About Error',
+                    icon='magic',
+                    button_style='info',
+                    layout=widgets.Layout(width='auto', margin='10px 0 10px 0')
+                )
                 
-            btn.on_click(on_error_click)
-            display(btn)
+                def on_error_click(_):
+                    btn.disabled = True
+                    btn.description = "Sending to ORACLE..."
+                    if not self.master_toggle.value:
+                        self.master_toggle.value = True
+                        time.sleep(1)
+                    
+                    self.chat_input.value = f"I received this error: {error_str}"
+                    self._on_submit_chat(None)
+                    btn.layout.display = 'none'
+                    
+                btn.on_click(on_error_click)
+                display(btn)
 
-        ip.showtraceback = custom_showtraceback
+            ip.showtraceback = custom_showtraceback
+        except (NameError, AttributeError) as err:
+            logging.debug(f"IPython traceback hijack skipped: {err}")
 
     def start(self):
         self._monitor_running = True
         self._monitor_thread = threading.Thread(target=resource_monitor_thread, args=(self,), daemon=True)
         self._monitor_thread.start()
-        display(self.dashboard)
+        if HAS_IPYTHON:
+            display(self.dashboard)
 
 def deploy():
-    """Entry point for Jupyter Notebooks."""
+    """Entry point for Jupyter Notebooks (ORACLE-07)."""
     app = OracleDashboard()
     app.start()
     return app

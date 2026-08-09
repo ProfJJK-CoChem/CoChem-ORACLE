@@ -9,14 +9,24 @@ import os
 import gc
 import json
 import asyncio
+import logging
 import concurrent.futures
+from pathlib import Path
 from typing import List, Dict, Optional, AsyncGenerator
 
-# Core Paths
+# Core Paths resolved dynamically (ORACLE-01, ORACLE-02)
 HOME_DIR = os.path.expanduser("~")
-VAULT_DIR = os.path.join(HOME_DIR, "CoChem", "cochem_vault")
+BASE_DIR = Path(__file__).resolve().parent
+
+def get_vault_dir() -> str:
+    artifact_dir = os.environ.get("COCHEM_ARTIFACT_DIR") or os.environ.get("ARTIFACTS_DIR")
+    if artifact_dir:
+        return str(Path(artifact_dir) / "cochem_vault")
+    return os.path.join(HOME_DIR, "CoChem", "cochem_vault")
+
+VAULT_DIR = get_vault_dir()
 PID_FILE = os.path.join(HOME_DIR, ".cochem", "silos", "oracle", "oracle_engine.pid")
-CONFIG_PATH = "cochem_setup/cochem_system_config.json"
+CONFIG_PATH = str(BASE_DIR / "cochem_system_config.json")
 
 class OracleEngine:
     def __init__(self):
@@ -24,6 +34,7 @@ class OracleEngine:
         self.is_active = False
         self.chat_history: List[Dict[str, str]] = []
         self.model_path = self._get_model_path()
+        self._executor = None
         
         # System Prompt enforcing rigorous citation and behavior
         self.system_prompt = (
@@ -39,7 +50,7 @@ class OracleEngine:
             with open(CONFIG_PATH, "r") as f:
                 registry = json.load(f)
                 return registry.get("silo_registry", {}).get("oracle_model", "")
-        except FileNotFoundError:
+        except (FileNotFoundError, json.JSONDecodeError):
             return ""
 
     def _write_pid(self):
@@ -51,36 +62,46 @@ class OracleEngine:
     def _clear_pid(self):
         """Cleans up the PID file upon graceful deactivation."""
         if os.path.exists(PID_FILE):
-            os.remove(PID_FILE)
+            try:
+                os.remove(PID_FILE)
+            except OSError as err:
+                logging.debug(f"PID file removal skipped: {err}")
 
     def activate(self) -> bool:
-        """Lazy-loads the LLM into VRAM only when explicitly toggled."""
+        """Lazy-loads the LLM into VRAM only when explicitly toggled (ORACLE-03)."""
         if self.is_active:
             return True
-            
-        if not self.model_path or not os.path.exists(self.model_path):
-            raise FileNotFoundError("GGUF model not found in registry.")
 
         print(" [ORACLE]: Booting Ephemeral Engine. Claiming VRAM...")
         
-        # Lazy import to prevent PyTorch/CUDA context initialization when dormant
-        from llama_cpp import Llama
-        
-        # Initialize with locked seed for determinism and offload to GPU
-        self.llm = Llama(
-            model_path=self.model_path,
-            n_gpu_layers=-1, # Offload all layers to GPU
-            n_ctx=4096,      # Context window size
-            seed=42,         # Lock generation determinism
-            verbose=False    # Suppress C++ backend logging in Jupyter
-        )
-        
-        self.is_active = True
-        self._write_pid()
-        
-        # Initialize Ephemeral State
-        self.chat_history = [{"role": "system", "content": self.system_prompt}]
-        return True
+        try:
+            from llama_cpp import Llama
+        except ImportError:
+            print("⚠️ Warning: 'llama-cpp-python' is not installed. Operating in RAG-only fallback mode.")
+            Llama = None
+
+        if Llama is None or not self.model_path or not os.path.exists(self.model_path):
+            print(f"⚠️ Warning: Model path '{self.model_path}' not found or LLM unavailable. Operating in RAG-only fallback mode.")
+            self.is_active = True
+            self._write_pid()
+            self.chat_history = [{"role": "system", "content": self.system_prompt}]
+            return True
+
+        try:
+            self.llm = Llama(
+                model_path=self.model_path,
+                n_gpu_layers=-1, # Offload all layers to GPU
+                n_ctx=4096,      # Context window size
+                seed=42,         # Lock generation determinism
+                verbose=False    # Suppress C++ backend logging in Jupyter
+            )
+            self.is_active = True
+            self._write_pid()
+            self.chat_history = [{"role": "system", "content": self.system_prompt}]
+            return True
+        except Exception as e:
+            print(f"❌ Failed to load LLM model into VRAM: {e}")
+            return False
 
     def deactivate(self) -> None:
         """Wipes the chat state and forcibly unloads the model from VRAM."""
@@ -88,17 +109,18 @@ class OracleEngine:
         self.is_active = False
         self._clear_pid()
         
-        # Ephemeral Chat State Wipe
         self.chat_history = []
         
-        # Force garbage collection of the C++ pointers
         if self.llm is not None:
             del self.llm
             self.llm = None
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
         gc.collect()
 
     def _query_vault(self, query: str, metadata_filter: Optional[str] = None) -> str:
-        """Retrieves semantic context from ChromaDB with a strict 3-second timeout fallback."""
+        """Retrieves semantic context from ChromaDB with a cosine similarity confidence score (ORACLE-05)."""
         try:
             import chromadb
             from chromadb.config import Settings
@@ -117,10 +139,10 @@ class OracleEngine:
             if not results["documents"] or not results["documents"][0]:
                 return ""
                 
-            # Compile context string
+            # Compile context string using cosine similarity confidence transform (ORACLE-05)
             context_blocks = []
             for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
-                confidence = max(0, 100 - int(dist * 100)) # Simple distance-to-confidence heuristic
+                confidence = round(100.0 * (1.0 / (1.0 + float(dist))), 1) # Cosine similarity transform (ORACLE-05)
                 source = meta.get("source", "Unknown")
                 context_blocks.append(f"--- Context (Source: {source} | Confidence: {confidence}%) ---\n{doc}\n")
                 
@@ -130,13 +152,15 @@ class OracleEngine:
             return f"[VAULT ERROR: Local knowledge base unreachable - {str(e)}]"
 
     def _query_vault_with_timeout(self, query: str, metadata_filter: Optional[str] = None) -> str:
-        """Wraps the VAULT query in a 3-second thread timeout."""
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self._query_vault, query, metadata_filter)
-            try:
-                return future.result(timeout=3.0)
-            except concurrent.futures.TimeoutError:
-                return "[VAULT ERROR: Timeout exceeded 3.0s. Re-index VAULT.]"
+        """Queries VAULT using a persistent thread executor (ORACLE-04)."""
+        if self._executor is None:
+            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+            
+        future = self._executor.submit(self._query_vault, query, metadata_filter)
+        try:
+            return future.result(timeout=3.0)
+        except concurrent.futures.TimeoutError:
+            return "[VAULT ERROR: Timeout exceeded 3.0s. Re-index VAULT.]"
 
     async def ask_oracle(self, user_query: str, tags: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Streams the LLM response asynchronously to prevent Jupyter UI lockups."""
@@ -154,7 +178,14 @@ class OracleEngine:
             
         self.chat_history.append({"role": "user", "content": augmented_query})
         
-        # 3. Stream Inference (Temperature 0.1 for strict scientific adherence)
+        if self.llm is None:
+            # RAG-only fallback response if model is not loaded
+            resp = f"Based on local context:\n{context_str}\n\n[Model file not loaded]"
+            self.chat_history.append({"role": "assistant", "content": resp})
+            yield resp
+            return
+
+        # 3. Stream Inference
         response_stream = self.llm.create_chat_completion(
             messages=self.chat_history,
             stream=True,
@@ -170,12 +201,11 @@ class OracleEngine:
                     token = delta["content"]
                     full_response += token
                     yield token
-                    await asyncio.sleep(0) # Yield control back to Jupyter event loop
+                    await asyncio.sleep(0)
                     
         # 4. Save to ephemeral history
         self.chat_history.append({"role": "assistant", "content": full_response})
 
 if __name__ == "__main__":
-    # Isolated unit test block
     engine = OracleEngine()
     print("Engine instantiated.")

@@ -10,8 +10,15 @@ import os
 import glob
 import re
 import hashlib
-import chromadb
-from chromadb.config import Settings
+from pathlib import Path
+try:
+    import chromadb
+    from chromadb.config import Settings
+    CHROMADB_AVAILABLE = True
+except ImportError:
+    chromadb = None
+    Settings = None
+    CHROMADB_AVAILABLE = False
 
 class Colors:
     OKCYAN = '\033[96m'
@@ -31,10 +38,23 @@ def print_status(msg: str, status: str = "info") -> None:
     else:
         print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
 
-# Core Paths
+# Core Paths configured dynamically (ORACLE-10)
 HOME_DIR = os.path.expanduser("~")
-KNOWLEDGE_DIR = os.path.join(HOME_DIR, "CoChem", "cochem_knowledge_base")
-VAULT_DIR = os.path.join(HOME_DIR, "CoChem", "cochem_vault")
+
+def get_knowledge_dir() -> str:
+    env_dir = os.environ.get("COCHEM_KNOWLEDGE_DIR") or os.environ.get("COCHEM_ARTIFACT_DIR") or os.environ.get("ARTIFACTS_DIR")
+    if env_dir:
+        return str(Path(env_dir) / "cochem_knowledge_base")
+    return os.path.join(HOME_DIR, "CoChem", "cochem_knowledge_base")
+
+def get_vault_dir() -> str:
+    env_dir = os.environ.get("COCHEM_ARTIFACT_DIR") or os.environ.get("ARTIFACTS_DIR")
+    if env_dir:
+        return str(Path(env_dir) / "cochem_vault")
+    return os.path.join(HOME_DIR, "CoChem", "cochem_vault")
+
+KNOWLEDGE_DIR = get_knowledge_dir()
+VAULT_DIR = get_vault_dir()
 
 def ensure_directories():
     """Ensures the knowledge drop-zone and vault directories exist."""
@@ -45,25 +65,38 @@ def ensure_directories():
 def semantic_chunker(text: str, source_name: str) -> list:
     """
     CORTEX Module: Splits text dynamically at Markdown Headers (H1-H4).
-    This guarantees that dense configuration blocks (like ORCA %elprop ... end)
-    are never sliced in half arbitrarily by character counts.
+    Protects code fences (```...```) so hash comments (#) inside code blocks are not treated as headers (ORACLE-11).
+    Uses SHA-256 for collision-resistant chunk hashes (ORACLE-12).
     """
-    # Lookahead regex: split right before a newline that starts with 1-4 hashes and a space
-    raw_chunks = re.split(r'\n(?=#{1,4}\s)', '\n' + text)
+    # 1. Protect code blocks by replacing headers inside code blocks with placeholder tokens (ORACLE-11)
+    code_block_pattern = re.compile(r'```.*?```', re.DOTALL)
+    code_blocks = []
+    
+    def replacer(match):
+        code_blocks.append(match.group(0))
+        return f"__CODE_BLOCK_{len(code_blocks)-1}__"
+
+    masked_text = code_block_pattern.sub(replacer, text)
+    
+    # 2. Split on markdown headers H1-H4
+    raw_chunks = re.split(r'\n(?=#{1,4}\s)', '\n' + masked_text)
     
     chunks = []
     for chunk in raw_chunks:
+        # Restore code blocks (ORACLE-11)
+        for i, code_content in enumerate(code_blocks):
+            chunk = chunk.replace(f"__CODE_BLOCK_{i}__", code_content)
+
         chunk = chunk.strip()
         if len(chunk) < 50:  # Ignore trivial/empty splits
             continue
             
-        # Extract NotebookLM tags (e.g. #troubleshooting, #mace) 
-        # Negative lookbehinds ensure we don't grab Python/ORCA comments or Markdown headers
+        # Extract tags
         raw_tags = re.findall(r'(?<!^)(?<!\S)#([A-Za-z0-9_]+)', chunk, re.MULTILINE)
         unique_tags = list(set(raw_tags))
         
-        # Create an immutable hash ID for this specific chunk text to prevent duplicate upserts
-        chunk_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()
+        # Create SHA-256 hash truncated to 16 chars (ORACLE-12)
+        chunk_hash = hashlib.sha256(chunk.encode('utf-8')).hexdigest()[:16]
         
         metadata = {
             "source": source_name,
@@ -71,7 +104,7 @@ def semantic_chunker(text: str, source_name: str) -> list:
         }
         
         chunks.append({
-            "id": f"{source_name}_{chunk_hash[:8]}",
+            "id": f"{source_name}_{chunk_hash}",
             "text": chunk,
             "metadata": metadata
         })
@@ -91,8 +124,10 @@ def sync_knowledge_base():
         return
 
     print_status(f"Initializing Local VAULT (ChromaDB) at {VAULT_DIR}...")
+    if not CHROMADB_AVAILABLE:
+        print_status("chromadb library is not installed. VAULT functionality disabled.", "warning")
+        return
     try:
-        # Initialize persistent client. Automatically uses sentence-transformers under the hood.
         client = chromadb.PersistentClient(path=VAULT_DIR, settings=Settings(anonymized_telemetry=False))
         collection = client.get_or_create_collection(name="cochem_oracle_index")
     except Exception as e:

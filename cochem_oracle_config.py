@@ -1,7 +1,7 @@
 # cochem_canvas_target: cochem_oracle_config.py
 """
 Configuration module for CoChem-ORACLE.
-Handles all configuration settings for the ORACLE system.
+Unified under cochem_system_config.json (ORACLE-18).
 """
 
 import json
@@ -10,39 +10,30 @@ from pathlib import Path
 
 class OracleConfig:
     """
-    Configuration class for CoChem-ORACLE system.
+    Unified configuration wrapper for CoChem-ORACLE system (ORACLE-18).
+    Standardized on cochem_system_config.json.
     """
     
-    def __init__(self, config_file: str = "cochem_oracle_config.json"):
+    def __init__(self, config_file: str = None):
         """Initialize configuration."""
+        if config_file is None:
+            config_file = str(Path(__file__).resolve().parent / "cochem_system_config.json")
         self.config_file = config_file
         self.config = self._load_config()
         
     def _get_artifact_dir(self) -> str:
-        """Get the artifact directory for reproducible research.
-        
-        Returns:
-            str: The path to the artifact directory, using environment variable 
-                 or defaulting to home directory.
-        """
-        # Check if ARTIFACTS_DIR environment variable is set
-        artifacts_dir = os.environ.get('ARTIFACTS_DIR')
+        """Get the artifact directory for reproducible research."""
+        artifacts_dir = os.environ.get('COCHEM_ARTIFACT_DIR') or os.environ.get('ARTIFACTS_DIR')
         if artifacts_dir:
             return artifacts_dir
-        
-        # Fallback to home directory
         return os.path.join(os.path.expanduser("~"), "CoChem", "artifacts")
         
     def _load_config(self) -> dict:
-        """Load configuration from file."""
+        """Load configuration from unified cochem_system_config.json file."""
         try:
             with open(self.config_file, 'r') as f:
                 return json.load(f)
-        except FileNotFoundError:
-            # Return default configuration
-            return self._get_default_config()
-        except json.JSONDecodeError as e:
-            print(f"❌ Error loading config: {e}")
+        except (FileNotFoundError, json.JSONDecodeError):
             return self._get_default_config()
             
     def _get_default_config(self) -> dict:
@@ -83,18 +74,24 @@ class OracleConfig:
         
     def _save_config(self):
         """Save current configuration to file."""
-        with open(self.config_file, 'w') as f:
-            json.dump(self.config, f, indent=2)
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.config, f, indent=4)
+        except Exception as e:
+            print(f"⚠️ Warning saving config to {self.config_file}: {e}")
             
     def update_from_dict(self, updates: dict):
         """Update configuration from dictionary."""
         self.config.update(updates)
         self._save_config()
 
+def get_oracle_config(config_file: str = None) -> OracleConfig:
+    """Helper method to fetch active Oracle config."""
+    return OracleConfig(config_file)
+
 def main():
     """Main entry point for configuration module."""
     print("Initializing CoChem-ORACLE Configuration")
-    
     config = OracleConfig()
     print("Current configuration:", config.config)
 

@@ -9,60 +9,42 @@ import sys
 import json
 from pathlib import Path
 
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+try:
+    from cochem_knowledge_sync import sync_knowledge_base
+    from cochem_oracle_config import OracleConfig
+except ImportError:
+    from CoChem_ORACLE.cochem_knowledge_sync import sync_knowledge_base
+    from CoChem_ORACLE.cochem_oracle_config import OracleConfig
+
 class OracleOrchestrator:
     """
-    The main orchestrator that coordinates all ORACLE activities.
+    The main orchestrator that coordinates all ORACLE activities (ORACLE-19).
     """
     
-    def __init__(self, config_file: str = "cochem_oracle_config.json"):
+    def __init__(self, config_file: str = None):
         """Initialize the ORACLE orchestrator."""
-        self.config_file = config_file
-        self.config = self._load_config()
+        self.oracle_config = OracleConfig(config_file)
+        self.config_file = self.oracle_config.config_file
+        self.config = self.oracle_config.config
         self.is_initialized = False
         
     def _get_artifact_dir(self) -> str:
-        """Get the artifact directory for reproducible research.
+        """Get the artifact directory for reproducible research."""
+        return self.oracle_config._get_artifact_dir()
         
-        Returns:
-            str: The path to the artifact directory, using environment variable 
-                 or defaulting to home directory.
-        """
-        # Check if ARTIFACTS_DIR environment variable is set
-        artifacts_dir = os.environ.get('ARTIFACTS_DIR')
-        if artifacts_dir:
-            return artifacts_dir
-        
-        # Fallback to home directory
-        return os.path.join(os.path.expanduser("~"), "CoChem", "artifacts")
-        
-    def _load_config(self) -> dict:
-        """Load configuration from JSON file."""
-        try:
-            with open(self.config_file, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            print(f"⚠️  Configuration file {self.config_file} not found")
-            # Return default config
-            artifact_dir = self._get_artifact_dir()
-            return {
-                "project_name": "CoChem-ORACLE",
-                "version": "0.1.0",
-                "data_dir": os.path.join(artifact_dir, "ORACLE", "data")
-            }
-        except json.JSONDecodeError as e:
-            print(f"❌ Error loading configuration: {e}")
-            return {}
-            
     def initialize(self):
         """Initialize the ORACLE system."""
         print("🚀 Initializing CoChem-ORACLE System...")
         
-        # Create data directories using artifact directory for reproducible research
         artifact_dir = self._get_artifact_dir()
         data_dir = Path(self.config.get('data_dir', os.path.join(artifact_dir, "ORACLE", "data")))
         data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create subdirectories for different modules
         (data_dir / "knowledge_base").mkdir(parents=True, exist_ok=True)
         (data_dir / "logs").mkdir(parents=True, exist_ok=True)
         (data_dir / "reports").mkdir(parents=True, exist_ok=True)
@@ -71,36 +53,49 @@ class OracleOrchestrator:
         self.is_initialized = True
         print("✅ CoChem-ORACLE initialized successfully")
         
-    def run_knowledge_sync(self, target: str):
-        """Run knowledge synchronization with a target."""
+    def run_knowledge_sync(self, target: str = "default") -> bool:
+        """Run knowledge synchronization with live sync_knowledge_base engine (ORACLE-19)."""
         if not self.is_initialized:
             raise RuntimeError("ORACLE system must be initialized before running sync")
             
-        print(f"🔄 Synchronizing knowledge with {target}...")
+        print(f"🔄 Synchronizing knowledge base (Target: {target})...")
+        try:
+            sync_knowledge_base()
+            print(f"✅ Knowledge sync ({target}) completed successfully.")
+            return True
+        except Exception as e:
+            print(f"❌ Knowledge sync failed: {e}")
+            return False
         
-        # This would orchestrate the knowledge synchronization
-        # In a real implementation, this would call various modules
-        
-        print(f"✅ Knowledge sync with {target} completed")
-        
-    def generate_knowledge_report(self, output_dir: str = "./reports"):
-        """Generate comprehensive report of knowledge operations."""
+    def generate_knowledge_report(self, output_dir: str = "./reports") -> str:
+        """Generate comprehensive report of knowledge operations (ORACLE-19)."""
+        if not self.is_initialized:
+            raise RuntimeError("ORACLE system must be initialized before generating reports")
+            
         print(f"📄 Generating ORACLE knowledge report in {output_dir}")
+        os.makedirs(output_dir, exist_ok=True)
+        report_path = Path(output_dir) / "cochem_oracle_report.json"
         
-        # This is a placeholder for actual report generation
-        # In a real implementation, this would compile all operation results
+        report_data = {
+            "project": "CoChem-ORACLE",
+            "status": "OPERATIONAL",
+            "config_file": self.config_file,
+            "data_dir": str(self.config.get("data_dir", ""))
+        }
         
-        print("✅ ORACLE knowledge report generated")
+        with open(report_path, "w") as f:
+            json.dump(report_data, f, indent=4)
+            
+        print(f"✅ ORACLE knowledge report generated at {report_path}")
+        return str(report_path)
 
 def main():
     """Main entry point for CoChem-ORACLE."""
     print("Starting CoChem-ORACLE Orchestrator")
-    
     orchestrator = OracleOrchestrator()
     orchestrator.initialize()
     
-    # Example usage
-    orchestrator.run_knowledge_sync("external_database")
+    orchestrator.run_knowledge_sync("local_vault")
     orchestrator.generate_knowledge_report("./reports")
     
 if __name__ == "__main__":
