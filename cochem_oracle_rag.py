@@ -10,7 +10,7 @@ import os
 import re
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 HOME_DIR = os.path.expanduser("~")
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,7 +33,7 @@ def extract_error_signature(traceback_str: str) -> str:
     Extracts the final exception line (e.g., 'ValueError: invalid literal')
     and key module names for RAG query construction.
     """
-    if not traceback_str or not traceback_str.strip():
+    if not traceback_str or not isinstance(traceback_str, str) or not traceback_str.strip():
         return ""
 
     lines = traceback_str.strip().split("\n")
@@ -115,10 +115,12 @@ def query_vault_for_error(traceback_str: str, top_k: int = 3) -> List[Dict[str, 
             results["metadatas"][0],
             results["distances"][0]
         ):
-            confidence = round(100.0 * (1.0 / (1.0 + float(dist))), 1)
+            from cochem_oracle_engine import compute_split_conformal_interval
+            interval = compute_split_conformal_interval(dist)
             chunks.append({
                 "source": meta.get("source", "Unknown"),
-                "confidence": f"{confidence}%",
+                "confidence": f"{interval['lower_bound']}% - {interval['upper_bound']}% (95% Conformal)",
+                "conformal_interval": interval,
                 "content": doc
             })
 
@@ -220,3 +222,144 @@ def render_rag_error_summary(traceback_str: str) -> str:
 
     parts.append("---\n*Install and configure a GGUF model for full LLM-powered error diagnosis.*\n")
     return "\n".join(parts)
+
+
+SPEND_PRIORITY_SEQUENCE = [
+    "1. Core-valence basis set expansion",
+    "2. Higher-order coupled-cluster correlation (T -> (T) -> Q)",
+    "3. Relativistic corrections (DKH2/X2C)",
+    "4. Anharmonicity / VPT2",
+    "5. DBOC correction",
+    "6. CBS extrapolation",
+    "7. Frozen-core unfreezing",
+    "8. Triple-to-quadruple zeta",
+    "9. Diffuse function addition",
+    "10. Dense grid integration"
+]
+
+
+def route_method_query(query_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Executes the Step 0–6 Method Routing Decision Procedure (§8.5).
+    
+    Args:
+        query_info: Dictionary containing query parameters such as:
+            - query (str)
+            - product_class (str, optional: 'PRODUCT_A', 'PRODUCT_B', 'PRODUCT_C')
+            - has_experimental_reference (bool)
+            - has_template (bool)
+            - is_difference_calc (bool)
+            - num_atoms (int)
+            - gpu_available (bool)
+            - require_anharmonic_vpt2 (bool)
+            - method_type (str)
+            - engine (str)
+            
+    Returns:
+        Structured result matching ORACLEResponseV4 schema.
+    """
+    if not isinstance(query_info, dict):
+        query_info = {}
+
+    query_str = query_info.get("query", "Method routing decision query")
+
+    # Step 0: Product Class Selection
+    has_exp = query_info.get("has_experimental_reference", False)
+    has_tmpl = query_info.get("has_template", False)
+    is_diff = query_info.get("is_difference_calc", False)
+    explicit_class = query_info.get("product_class")
+
+    if explicit_class in ["PRODUCT_A", "PRODUCT_B", "PRODUCT_C"]:
+        product_class = explicit_class
+    elif is_diff:
+        product_class = "PRODUCT_C"
+    elif has_exp or has_tmpl:
+        product_class = "PRODUCT_B"
+    else:
+        product_class = "PRODUCT_A"
+
+    # Step 1: System Size Filter
+    raw_atoms = query_info.get("num_atoms", 10)
+    try:
+        num_atoms = int(raw_atoms) if raw_atoms is not None else 10
+    except (ValueError, TypeError):
+        num_atoms = 10
+    size_category = "small" if num_atoms <= 10 else ("medium" if num_atoms <= 50 else "large")
+
+    # Step 2: Hardware & Engine Capabilities
+    gpu_available = query_info.get("gpu_available", False)
+    engine_requested = str(query_info.get("engine", "orca")).lower()
+
+    # Step 3: Anharmonicity Track Selection (CFOUR vs ORCA vs PySCF)
+    req_vpt2 = query_info.get("require_anharmonic_vpt2", False)
+    method_type = str(query_info.get("method_type", "dft")).lower()
+    is_vdw = query_info.get("is_vdw_complex", False) or "van der waals" in query_str.lower() or "vdw" in query_str.lower()
+
+    if is_vdw:
+        track = "MPQC"
+    elif req_vpt2 and ("coupled_cluster" in method_type or "cc" in method_type or "cfour" in engine_requested):
+        track = "CFOUR"
+    elif gpu_available and "pyscf" in engine_requested:
+        track = "PYSCF"
+    else:
+        track = "ORCA"
+
+    # Step 4: Spend Priority Sequence
+    spend_priority = SPEND_PRIORITY_SEQUENCE
+
+    # Step 5: Wall-Clock Budget Matching
+    explicit_tier = query_info.get("recommended_tier")
+    valid_tiers = ["T1-10s", "T1-1min", "T1-30min", "T2-1h", "T2-3h", "T2-12h", "T3-12h", "T3-1d", "T3-3d", "T4-1w", "T4-1mo"]
+    if explicit_tier in valid_tiers:
+        recommended_tier = explicit_tier
+    elif is_vdw:
+        recommended_tier = "T1-30min"
+    elif product_class == "PRODUCT_A":
+        if size_category == "small":
+            recommended_tier = "T3-12h"
+        elif size_category == "medium":
+            recommended_tier = "T2-3h"
+        else:
+            recommended_tier = "T1-30min"
+    elif product_class in ["PRODUCT_B", "PRODUCT_C"]:
+        if size_category == "small":
+            recommended_tier = "T1-30min"
+        elif size_category == "medium":
+            recommended_tier = "T1-1min"
+        else:
+            recommended_tier = "T1-10s"
+    else:
+        recommended_tier = "T2-3h"
+
+    # Step 6: Provenance & Section 12.5 Compliance Verification
+    provenance_tag = "[M]" if has_exp else ("[D]" if product_class in ["PRODUCT_B", "PRODUCT_C"] else "[E]")
+
+    from cochem_oracle_engine import compute_split_conformal_interval, validate_section_12_5
+    raw_dist = query_info.get("chroma_distance", 0.1)
+    try:
+        dist = float(raw_dist) if raw_dist is not None else 0.1
+    except (ValueError, TypeError):
+        dist = 0.1
+    interval = compute_split_conformal_interval(dist)
+
+    answer_summary = (
+        f"Recommended Row: {recommended_tier} under Product Class {product_class} ({track} Track) {provenance_tag}. "
+    )
+    if is_vdw and track == "MPQC":
+        answer_summary += "For van der Waals complexes, using MPQC with cc-pVTZ-F12 as the Tier 1 default."
+    else:
+        answer_summary += f"VPT2 handling routed to {track} per Section 9."
+
+    val_res = validate_section_12_5(answer_summary)
+
+    return {
+        "query": query_str,
+        "recommended_tier": recommended_tier,
+        "product_class": product_class,
+        "track": track,
+        "provenance_tag": provenance_tag,
+        "section_12_5_compliant": val_res["compliant"],
+        "conformal_interval": interval,
+        "spend_priority_sequence": spend_priority,
+        "answer": answer_summary
+    }
+

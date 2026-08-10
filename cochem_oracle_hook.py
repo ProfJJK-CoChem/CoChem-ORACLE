@@ -109,9 +109,36 @@ def get_system_vram() -> float:
     logging.info("No GPU detected (PyTorch and nvidia-smi both unavailable). VRAM set to 0.0 GB.")
     return 0.0
 
-def calculate_theoretical_vram(num_atoms: int, method: str) -> float:
-    """Estimates GBs of VRAM needed based on matrix dimensions."""
-    return (num_atoms * 0.05) if method == "MACE" else (num_atoms * 0.2)
+def calculate_theoretical_vram(num_atoms: int, method: str = "DFT") -> float:
+    """Estimates GBs of VRAM needed based on matrix dimensions ($36 N^2$ physical scaling per Method Matrix §9.1).
+    
+    Args:
+        num_atoms: Number of atoms in the chemical system.
+        method: Computational method ("MACE", "DFT", "Coupled_Cluster", etc.).
+        
+    Returns:
+        Theoretical VRAM footprint in GB rounded to 3 decimal places.
+    """
+    try:
+        n_atoms = max(1, int(num_atoms or 0))
+    except (ValueError, TypeError):
+        n_atoms = 10
+
+    method_upper = str(method or "").upper()
+    
+    if "MACE" in method_upper:
+        # MACE MLFF: 0.5 GB base model/CUDA context + linear node feature scaling
+        vram_gb = 0.5 + (n_atoms * 0.005)
+    else:
+        # Quantum methods (DFT, Coupled Cluster, ORCA, PySCF):
+        # Basis set scaling: ~30 basis functions per atom (def2-TZVP / cc-pVTZ average)
+        # Matrix memory scaling: 36 * N_bf^2 matrix elements (double precision 8 bytes) + 1.0 GB base context
+        n_bf = n_atoms * 30
+        matrix_bytes = 36 * (n_bf ** 2) * 8
+        matrix_gb = matrix_bytes / (1024 ** 3)
+        vram_gb = 1.0 + matrix_gb
+        
+    return round(vram_gb, 3)
 
 def verify_mace_compatibility(registry: dict) -> bool:
     """Checks the micro-silo registry for MACE-Torch acceleration compatibility."""

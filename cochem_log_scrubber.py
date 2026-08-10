@@ -49,9 +49,11 @@ class TelemetrySanitizer:
             r'(\*\s*xyz.*?\n)(.*?)(\*)', re.DOTALL | re.IGNORECASE
         )
         
-        # 3. Refined SMILES pattern requiring explicit ring numbers, bonds, or brackets (ORACLE-14)
+        # 3. SMILES pattern matching candidate chemical sequences without literal commas or rigid {3,} (ORACLE-14)
+        # Refined regex using negative lookbehind/lookahead (?<![A-Za-z0-9_]) ... (?![A-Za-z0-9_])
+        # to prevent truncation of bracketed, charged, isotopic, or disconnected SMILES strings.
         self.smiles_pattern = re.compile(
-            r'\b([B,C,N,O,P,S,F,Cl,Br,I,c,n,o,s,p]+[\(\)\[\]\=\#\@\+\-\\\/0-9]{3,}[A-Za-z0-9\(\)\[\]\=\#\+\-\.\@\:\\\/]*)\b'
+            r'(?<![A-Za-z0-9_])((?:Cl|Br|Si|Se|Te|Na|K|Fe|Mg|Ca|Li|Cu|Zn|Al|Pt|Pd|[BCNOPSFIHbcnsoph0-9\(\)\[\]\=\#\@\+\-\\\/\.:%]){2,})(?![A-Za-z0-9_])'
         )
         
         # 4. Matches continuous block matrices of floats
@@ -61,9 +63,11 @@ class TelemetrySanitizer:
 
     def _is_valid_smiles(self, candidate: str) -> bool:
         """Validates SMILES candidate via RDKit if available (ORACLE-14)."""
+        if not candidate:
+            return False
         if not RDKIT_AVAILABLE:
-            # Fallback heuristic: check for explicit bond/bracket/ring characters
-            return any(c in candidate for c in ['=', '#', '[', ']', '@', '\\', '/'])
+            # Fallback heuristic: check for explicit bond/bracket/ring/aromatic characters
+            return any(c in candidate for c in ['=', '#', '[', ']', '@', '\\', '/', '(', ')']) or any(c.isdigit() for c in candidate)
         try:
             mol = Chem.MolFromSmiles(candidate)
             return mol is not None
@@ -97,11 +101,18 @@ class TelemetrySanitizer:
 
     def scrub_chat_log(self, chat_history: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Iterates over the ephemeral chat array and sanitizes all content."""
+        if not isinstance(chat_history, list):
+            return []
         scrubbed_history = []
         for msg in chat_history:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", "unknown")) if msg.get("role") is not None else "unknown"
+            content = msg.get("content", "")
+            content_str = str(content) if content is not None else ""
             scrubbed_msg = {
-                "role": msg.get("role", "unknown"),
-                "content": self.sanitize_text(msg.get("content", ""))
+                "role": role,
+                "content": self.sanitize_text(content_str)
             }
             scrubbed_history.append(scrubbed_msg)
         return scrubbed_history

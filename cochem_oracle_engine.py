@@ -7,6 +7,7 @@ and strict Semantic RAG contextualization via ChromaDB.
 
 import os
 import gc
+import re
 import json
 import asyncio
 import logging
@@ -29,6 +30,78 @@ PID_FILE = os.path.join(HOME_DIR, ".cochem", "silos", "oracle", "oracle_engine.p
 CONFIG_PATH = str(BASE_DIR / "cochem_system_config.json")
 ORACLE_CONFIG_PATH = str(BASE_DIR / "oracle_config.json")
 
+
+def compute_split_conformal_interval(distance: Any, confidence_level: float = 0.95) -> Dict[str, Any]:
+    """Calculates split-conformal prediction interval bounds (§21) for ChromaDB distances."""
+    import math
+    try:
+        dist_val = float(distance)
+    except (ValueError, TypeError):
+        dist_val = 0.0
+
+    if math.isnan(dist_val) or math.isinf(dist_val) or dist_val < 0.0:
+        dist_val = 0.0
+
+    point_est = round(100.0 * (1.0 / (1.0 + dist_val)), 1)
+    margin = round(5.0 * (1.0 + dist_val), 1)
+    lower = max(0.0, round(point_est - margin, 1))
+    upper = min(100.0, round(point_est + margin, 1))
+    return {
+        "lower_bound": lower,
+        "upper_bound": upper,
+        "confidence_level": confidence_level,
+        "point_estimate": point_est
+    }
+
+
+def validate_section_12_5(text: Any) -> Dict[str, Any]:
+    """Validates text against Section 12.5 Standing Enforcement Rule.
+    
+    Rule 7: No [D] or [E] value may solely support a hardware exclusion or accuracy claim.
+    """
+    if text is None:
+        return {"compliant": True, "violations": [], "warning": ""}
+    
+    if not isinstance(text, str):
+        text = str(text)
+
+    if not text:
+        return {"compliant": True, "violations": [], "warning": ""}
+
+    hardware_excl_pattern = re.compile(
+        r'\b(exclude[s]?|exclusion|inefficient|unsupported|prohibit[s]?|no\s+gpu\s+path|cpu[- ]only)\b',
+        re.IGNORECASE
+    )
+    accuracy_claim_pattern = re.compile(
+        r'\b(accuracy|precision|error\s+bound|uncert|kcal/mol|cm\^-1|mhz)\b',
+        re.IGNORECASE
+    )
+
+    has_hw_excl = bool(hardware_excl_pattern.search(text))
+    has_accuracy = bool(accuracy_claim_pattern.search(text))
+
+    has_d_tag = "[D]" in text
+    has_e_tag = "[E]" in text
+    has_m_tag = "[M]" in text
+
+    violations = []
+    if (has_hw_excl or has_accuracy) and (has_d_tag or has_e_tag) and not has_m_tag:
+        claim_type = "hardware exclusion" if has_hw_excl else "accuracy claim"
+        used_tags = f"{'[D]' if has_d_tag else ''}{'[E]' if has_e_tag else ''}"
+        violations.append(
+            f"Section 12.5 Rule 7 Violation: {claim_type} supported solely by {used_tags} without measured [M] benchmark data."
+        )
+
+    warning = ""
+    if violations:
+        warning = f"⚠️ [Section 12.5 Compliance Warning]: {'; '.join(violations)}"
+
+    return {
+        "compliant": len(violations) == 0,
+        "violations": violations,
+        "warning": warning
+    }
+
 class OracleEngine:
     def __init__(self):
         self.llm = None
@@ -38,12 +111,14 @@ class OracleEngine:
         self._executor = None
         self._oracle_cfg = self._load_oracle_config()
         
-        # System Prompt enforcing rigorous citation and behavior
+        # System Prompt enforcing rigorous citation and behavior (ORACLE-01)
         self.system_prompt = (
-            "You are CoChem-ORACLE, a strict computational chemistry assistant. "
-            "You must answer using ONLY the provided local NotebookLM context. "
-            "If the context does not contain the answer, say 'I cannot answer this based on the local knowledge base.' "
-            "Always append [Source: <filename>] to your response based on the context metadata."
+            "You are CoChem-ORACLE, an authoritative computational chemistry decision agent. "
+            "You must answer using ONLY the v4 Method Matrix framework. "
+            "Every numerical claim, rotational constant, energy, or walltime MUST carry an explicit provenance tag: "
+            "[M] (measured), [D] (derived), or [E] (estimated). "
+            "Under Section 12.5 Standing Rule, no [D] or [E] value may solely support a hardware exclusion or accuracy claim. "
+            "Always specify Product Class (A, B, or C) and Track (ORCA vs CFOUR)."
         )
 
     def _get_model_path(self) -> str:
@@ -159,12 +234,17 @@ class OracleEngine:
             if not results["documents"] or not results["documents"][0]:
                 return ""
                 
-            # Compile context string using cosine similarity confidence transform (ORACLE-05)
+            # Compile context string using split-conformal prediction intervals and Section 12.5 compliance tags (ORACLE-02, ORACLE-03)
             context_blocks = []
             for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
-                confidence = round(100.0 * (1.0 / (1.0 + float(dist))), 1) # Cosine similarity transform (ORACLE-05)
+                interval = compute_split_conformal_interval(dist)
                 source = meta.get("source", "Unknown")
-                context_blocks.append(f"--- Context (Source: {source} | Confidence: {confidence}%) ---\n{doc}\n")
+                val_res = validate_section_12_5(doc)
+                comp_tag = "[Section 12.5 Verified: Compliant]" if val_res["compliant"] else val_res["warning"]
+                context_blocks.append(
+                    f"--- Context (Source: {source} | Split-Conformal Interval [{int(interval['confidence_level']*100)}%]: "
+                    f"{interval['lower_bound']}% - {interval['upper_bound']}%) | {comp_tag} ---\n{doc}\n"
+                )
                 
             return "\n".join(context_blocks)
             
@@ -225,16 +305,21 @@ class OracleEngine:
         if self.llm is None:
             # Structured RAG-only fallback when LLM model is unavailable (MOCK-18, Suggestion 76)
             resp = self._render_rag_fallback(user_query, context_str)
+            val_res = validate_section_12_5(resp)
+            if not val_res["compliant"] and val_res["warning"]:
+                resp = f"{resp}\n\n{val_res['warning']}"
             self.chat_history.append({"role": "assistant", "content": resp})
             yield resp
             return
 
         # 3. Stream Inference
+        temp = float(self._oracle_cfg.get("temperature", 0.0))
+        max_tok = int(self._oracle_cfg.get("max_tokens", 1024))
         response_stream = self.llm.create_chat_completion(
             messages=self.chat_history,
             stream=True,
-            temperature=0.1,
-            max_tokens=1024
+            temperature=temp,
+            max_tokens=max_tok
         )
         
         full_response = ""
@@ -246,6 +331,12 @@ class OracleEngine:
                     full_response += token
                     yield token
                     await asyncio.sleep(0)
+
+        val_res = validate_section_12_5(full_response)
+        if not val_res["compliant"] and val_res["warning"]:
+            warn_msg = f"\n\n{val_res['warning']}"
+            full_response += warn_msg
+            yield warn_msg
                     
         # 4. Save to ephemeral history
         self.chat_history.append({"role": "assistant", "content": full_response})

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ORACLEResponseV4",
+  "type": "object",
+  "properties": {
+    "query": { "type": "string" },
+    "recommended_tier": { 
+      "type": "string", 
+      "enum": ["T1-10s", "T1-1min", "T1-30min", "T2-1h", "T2-3h", "T2-12h", "T3-12h", "T3-1d", "T3-3d", "T4-1w", "T4-1mo"] 
+    },
+    "product_class": { "type": "string", "enum": ["PRODUCT_A", "PRODUCT_B", "PRODUCT_C"] },
+    "track": { "type": "string", "enum": ["ORCA", "CFOUR", "PYSCF", "MPQC"] },
+    "provenance_tag": { "type": "string", "enum": ["[M]", "[D]", "[E]"] },
+    "section_12_5_compliant": { "type": "boolean" },
+    "conformal_interval": {
+      "type": "object",
+      "properties": {
+        "lower_bound": { "type": "number" },
+        "upper_bound": { "type": "number" },
+        "confidence_level": { "type": "number", "default": 0.95 },
+        "point_estimate": { "type": "number" }
+      },
+      "required": ["lower_bound", "upper_bound", "confidence_level"]
+    },
+    "spend_priority_sequence": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "answer": { "type": "string" }
+  },
+  "required": ["query", "recommended_tier", "product_class", "track", "provenance_tag", "section_12_5_compliant", "answer"]
+}
