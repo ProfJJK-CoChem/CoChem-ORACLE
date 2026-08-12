@@ -20,15 +20,20 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
+import logging
+
+logger = logging.getLogger("CoChem_Setup_Phase_4b")
+
+
 def print_status(msg: str, status_type: str = "info") -> None:
     if status_type == "info":
-        print(f"{Colors.OKCYAN}[INFO]{Colors.ENDC} {msg}")
+        logger.info(f"[INFO] {msg}")
     elif status_type == "success":
-        print(f"{Colors.OKGREEN}[SUCCESS]{Colors.ENDC} {msg}")
+        logger.info(f"[SUCCESS] {msg}")
     elif status_type == "warning":
-        print(f"{Colors.WARNING}[WARNING]{Colors.ENDC} {msg}")
+        logger.warning(f"[WARNING] {msg}")
     elif status_type == "fail":
-        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {msg}")
+        logger.error(f"[FAIL] {msg}")
 
 # Core Paths
 HOME_DIR = os.path.expanduser("~")
@@ -46,9 +51,19 @@ def provision_silo() -> str:
     print_status(f"Provisioning ORACLE micro-silo at {SILO_DIR}...", "info")
     if not os.path.exists(SILO_DIR):
         try:
-            subprocess.run([sys.executable, "-m", "venv", SILO_DIR], check=True)
+            try:
+                from core_engine.cochem_core_subprocess_broker import safe_subprocess_run
+            except ImportError:
+                from pathlib import Path
+                for p in Path(__file__).resolve().parents:
+                    cb = p / "CoChem-BASE"
+                    if cb.exists() and str(cb) not in sys.path:
+                        sys.path.insert(0, str(cb))
+                        break
+                from core_engine.cochem_core_subprocess_broker import safe_subprocess_run
+            safe_subprocess_run([sys.executable, "-m", "venv", SILO_DIR], check=True)
             print_status("ORACLE micro-silo created.", "success")
-        except subprocess.CalledProcessError as e:
+        except Exception as e:
             print_status(f"Failed to create ORACLE silo: {e}", "fail")
             sys.exit(1)
     else:
@@ -61,8 +76,6 @@ def install_dependencies(silo_python: str) -> None:
     """Installs llama-cpp-python, chromadb, and supporting RAG libraries."""
     print_status("Installing ORACLE dependencies into micro-silo...", "info")
     
-    # We install llama-cpp-python with basic CPU support first for safety, 
-    # but in a full CUDA env we would pass CMAKE_ARGS="-DGGML_CUDA=on"
     deps = [
         "llama-cpp-python", 
         "chromadb", 
@@ -72,14 +85,24 @@ def install_dependencies(silo_python: str) -> None:
     ]
     
     try:
-        subprocess.run([silo_python, "-m", "pip", "install", "--upgrade", "pip"], check=True, stdout=subprocess.DEVNULL)
-        subprocess.run([silo_python, "-m", "pip", "install"] + deps, check=True)
+        try:
+            from core_engine.cochem_core_subprocess_broker import safe_subprocess_run
+        except ImportError:
+            from pathlib import Path
+            for p in Path(__file__).resolve().parents:
+                cb = p / "CoChem-BASE"
+                if cb.exists() and str(cb) not in sys.path:
+                    sys.path.insert(0, str(cb))
+                    break
+            from core_engine.cochem_core_subprocess_broker import safe_subprocess_run
+        safe_subprocess_run([silo_python, "-m", "pip", "install", "--upgrade", "pip"], check=True, capture_output=True)
+        safe_subprocess_run([silo_python, "-m", "pip", "install"] + deps, check=True)
         print_status("ORACLE dependencies successfully installed.", "success")
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         print_status(f"Dependency installation failed: {e}", "fail")
         sys.exit(1)
 
-def reporthook(count, block_size, total_size):
+def reporthook(count: int, block_size: int, total_size: int) -> None:
     """Callback function to display download progress."""
     global start_time
     if count == 0:
@@ -91,7 +114,7 @@ def reporthook(count, block_size, total_size):
         duration = 1e-6
     speed = int(progress_size / (1024 * duration))
     percent = int(count * block_size * 100 / total_size)
-    sys.stdout.write(f"\r{Colors.OKCYAN}[DOWNLOADING]{Colors.ENDC} {percent}% - {progress_size / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB | {speed} KB/s")
+    sys.stdout.write(f"\r[DOWNLOADING] {percent}% - {progress_size / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB | {speed} KB/s")
     sys.stdout.flush()
 
 def download_model() -> None:
@@ -104,10 +127,10 @@ def download_model() -> None:
     print_status(f"Downloading Q4_K_M GGUF model (~4.1 GB). This may take a while...", "info")
     try:
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH, reporthook)
-        print() # New line after progress bar
+        sys.stdout.write("\n")
         print_status("Model download complete.", "success")
     except Exception as e:
-        print()
+        sys.stdout.write("\n")
         print_status(f"Failed to download model: {e}", "fail")
         sys.exit(1)
 
@@ -118,8 +141,12 @@ def update_registry() -> None:
         print_status("Registry not found. Run previous setup phases first.", "warning")
         return
 
-    with open(CONFIG_PATH, "r") as f:
-        registry = json.load(f)
+    try:
+        from cochem_base.config_loader import load_system_config_dict
+        registry = load_system_config_dict(Path(CONFIG_PATH))
+    except Exception:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            registry = json.loads(f.read())
 
     if "silo_registry" not in registry:
         registry["silo_registry"] = {}
@@ -128,18 +155,18 @@ def update_registry() -> None:
     registry["silo_registry"]["oracle_model"] = MODEL_PATH
     registry["silo_registry"]["oracle_vram_limit_gb"] = 6.0
 
-    with open(CONFIG_PATH, "w") as f:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=4)
     
     print_status("Registry successfully patched with ORACLE parameters.", "success")
 
-def main():
-    print(f"\n{Colors.BOLD}--- Phase 4b: ORACLE Silo Provisioning ---{Colors.ENDC}\n")
+def main() -> None:
+    logger.info("--- Phase 4b: ORACLE Silo Provisioning ---")
     silo_python = provision_silo()
     install_dependencies(silo_python)
     download_model()
     update_registry()
-    print(f"\n{Colors.BOLD}--- ORACLE Phase 4b Complete ---{Colors.ENDC}\n")
+    logger.info("--- ORACLE Phase 4b Complete ---")
 
 if __name__ == "__main__":
     main()

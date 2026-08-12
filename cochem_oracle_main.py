@@ -21,12 +21,17 @@ except ImportError:
     from CoChem_ORACLE.cochem_knowledge_sync import sync_knowledge_base
     from CoChem_ORACLE.cochem_oracle_config import OracleConfig
 
+import logging
+
+logger = logging.getLogger("CoChem_ORACLE_Main")
+
+
 class OracleOrchestrator:
     """
     The main orchestrator that coordinates all ORACLE activities (ORACLE-19).
     """
     
-    def __init__(self, config_file: str = None):
+    def __init__(self, config_file: str = None) -> None:
         """Initialize the ORACLE orchestrator."""
         self.oracle_config = OracleConfig(config_file)
         self.config_file = self.oracle_config.config_file
@@ -37,9 +42,9 @@ class OracleOrchestrator:
         """Get the artifact directory for reproducible research."""
         return self.oracle_config._get_artifact_dir()
         
-    def initialize(self):
+    def initialize(self) -> None:
         """Initialize the ORACLE system."""
-        print("🚀 Initializing CoChem-ORACLE System...")
+        logger.info("Initializing CoChem-ORACLE System...")
         
         artifact_dir = self._get_artifact_dir()
         data_dir = Path(self.config.get('data_dir', os.path.join(artifact_dir, "ORACLE", "data")))
@@ -51,20 +56,20 @@ class OracleOrchestrator:
         (data_dir / "cache").mkdir(parents=True, exist_ok=True)
         
         self.is_initialized = True
-        print("✅ CoChem-ORACLE initialized successfully")
+        logger.info("CoChem-ORACLE initialized successfully")
         
     def run_knowledge_sync(self, target: str = "default") -> bool:
         """Run knowledge synchronization with live sync_knowledge_base engine (ORACLE-19)."""
         if not self.is_initialized:
             raise RuntimeError("ORACLE system must be initialized before running sync")
             
-        print(f"🔄 Synchronizing knowledge base (Target: {target})...")
+        logger.info(f"Synchronizing knowledge base (Target: {target})...")
         try:
             sync_knowledge_base()
-            print(f"✅ Knowledge sync ({target}) completed successfully.")
+            logger.info(f"Knowledge sync ({target}) completed successfully.")
             return True
         except Exception as e:
-            print(f"❌ Knowledge sync failed: {e}")
+            logger.error(f"Knowledge sync failed: {e}")
             return False
         
     def generate_knowledge_report(self, output_dir: str = "./reports") -> str:
@@ -72,7 +77,7 @@ class OracleOrchestrator:
         if not self.is_initialized:
             raise RuntimeError("ORACLE system must be initialized before generating reports")
             
-        print(f"📄 Generating ORACLE knowledge report in {output_dir}")
+        logger.info(f"Generating ORACLE knowledge report in {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
         report_path = Path(output_dir) / "cochem_oracle_report.json"
         
@@ -83,15 +88,15 @@ class OracleOrchestrator:
             "data_dir": str(self.config.get("data_dir", ""))
         }
         
-        with open(report_path, "w") as f:
+        with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report_data, f, indent=4)
             
-        print(f"✅ ORACLE knowledge report generated at {report_path}")
+        logger.info(f"ORACLE knowledge report generated at {report_path}")
         return str(report_path)
 
-def main():
+def main() -> None:
     """Main entry point for CoChem-ORACLE."""
-    print("Starting CoChem-ORACLE Orchestrator")
+    logger.info("Starting CoChem-ORACLE Orchestrator")
     orchestrator = OracleOrchestrator()
     orchestrator.initialize()
     

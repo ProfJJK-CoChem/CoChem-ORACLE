@@ -28,15 +28,20 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
+import logging
+
+logger = logging.getLogger("CoChem_Knowledge_Sync")
+
+
 def print_status(msg: str, status: str = "info") -> None:
     if status == "success":
-        print(f" {Colors.OKGREEN}✅ {msg}{Colors.ENDC}")
+        logger.info(f"✅ {msg}")
     elif status == "warning":
-        print(f" {Colors.WARNING}⚠️ {msg}{Colors.ENDC}")
+        logger.warning(f"⚠️ {msg}")
     elif status == "fail":
-        print(f" {Colors.FAIL}❌ {msg}{Colors.ENDC}")
+        logger.error(f"❌ {msg}")
     else:
-        print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
+        logger.info(f"➡️ {msg}")
 
 # Core Paths configured dynamically (ORACLE-10)
 HOME_DIR = os.path.expanduser("~")
@@ -56,13 +61,13 @@ def get_vault_dir() -> str:
 KNOWLEDGE_DIR = get_knowledge_dir()
 VAULT_DIR = get_vault_dir()
 
-def ensure_directories():
+def ensure_directories() -> None:
     """Ensures the knowledge drop-zone and vault directories exist."""
     os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
     os.makedirs(VAULT_DIR, exist_ok=True)
     print_status(f"Knowledge drop-zone verified at: {KNOWLEDGE_DIR}")
 
-def semantic_chunker(text: str, source_name: str) -> list:
+def semantic_chunker(text: str, source_name: str) -> List[Dict[str, Any]]:
     """
     CORTEX Module: Splits text dynamically at Markdown Headers (H1-H4).
     Protects code fences (```...```) so hash comments (#) inside code blocks are not treated as headers (ORACLE-11).
@@ -72,7 +77,7 @@ def semantic_chunker(text: str, source_name: str) -> list:
     code_block_pattern = re.compile(r'```.*?```', re.DOTALL)
     code_blocks = []
     
-    def replacer(match):
+    def replacer(match: Any) -> str:
         code_blocks.append(match.group(0))
         return f"__CODE_BLOCK_{len(code_blocks)-1}__"
 
@@ -111,7 +116,7 @@ def semantic_chunker(text: str, source_name: str) -> list:
         
     return chunks
 
-def sync_knowledge_base():
+def sync_knowledge_base() -> None:
     """VAULT Module: Processes all files and upserts to ChromaDB."""
     ensure_directories()
     
@@ -163,8 +168,8 @@ def sync_knowledge_base():
 
     print_status(f"Sync Complete. VAULT now holds {total_chunks} updated chunks ready for RAG.", "success")
 
-def main():
-    print(f"\n{Colors.BOLD}--- CoChem-ORACLE: Knowledge Sync ---{Colors.ENDC}")
+def main() -> None:
+    logger.info("--- CoChem-ORACLE: Knowledge Sync ---")
     sync_knowledge_base()
 
 if __name__ == "__main__":

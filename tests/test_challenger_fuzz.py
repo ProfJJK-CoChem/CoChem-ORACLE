@@ -32,7 +32,7 @@ from cochem_knowledge_sync import semantic_chunker, sync_knowledge_base
 # 1. Stress Testing validate_section_12_5
 # =====================================================================
 
-def test_fuzz_validate_section_12_5_non_string_types():
+def test_fuzz_validate_section_12_5_non_string_types() -> None:
     """Fuzz validate_section_12_5 with non-string input types."""
     res_none = validate_section_12_5(None)
     assert res_none["compliant"] is True
@@ -45,7 +45,7 @@ def test_fuzz_validate_section_12_5_non_string_types():
     assert len(res_list["violations"]) == 1
 
 
-def test_fuzz_validate_section_12_5_edge_claims():
+def test_fuzz_validate_section_12_5_edge_claims() -> None:
     """Test boundary combinations of claims and provenance tags."""
     # Only [D] tag with exclusion -> violation
     res1 = validate_section_12_5("We exclude GPU path because of high memory [D].")
@@ -69,7 +69,7 @@ def test_fuzz_validate_section_12_5_edge_claims():
 # 2. Stress Testing compute_split_conformal_interval
 # =====================================================================
 
-def test_fuzz_compute_split_conformal_interval_edge_values():
+def test_fuzz_compute_split_conformal_interval_edge_values() -> None:
     """Fuzz split conformal prediction interval with extreme values."""
     # Negative distance -> handled via max(0.0, ...)
     res_neg = compute_split_conformal_interval(-5.0)
@@ -104,7 +104,7 @@ def test_fuzz_compute_split_conformal_interval_edge_values():
 # 3. Stress Testing route_method_query
 # =====================================================================
 
-def test_fuzz_route_method_query_invalid_inputs():
+def test_fuzz_route_method_query_invalid_inputs() -> None:
     """Fuzz route_method_query with invalid, missing, and non-standard query dicts."""
     # Non-dict input
     res_none = route_method_query(None)
@@ -142,7 +142,7 @@ def test_fuzz_route_method_query_invalid_inputs():
 # 4. Stress Testing Error RAG Diagnostics
 # =====================================================================
 
-def test_fuzz_extract_error_signature():
+def test_fuzz_extract_error_signature() -> None:
     """Fuzz error signature extraction."""
     # None or empty string
     assert extract_error_signature(None) == ""
@@ -154,7 +154,7 @@ def test_fuzz_extract_error_signature():
 
     # Realistic traceback
     tb = """Traceback (most recent call last):
-  File "D:\\Gdrive\\CoChem\\cochem_oracle_engine.py", line 42, in ask_oracle
+  File "cochem_oracle_engine.py", line 42, in ask_oracle
     raise ValueError("Invalid configuration for ORCA track")
 ValueError: Invalid configuration for ORCA track"""
     sig = extract_error_signature(tb)
@@ -162,7 +162,7 @@ ValueError: Invalid configuration for ORCA track"""
     assert "ValueError: Invalid configuration for ORCA track" in sig
 
 
-def test_fuzz_query_vault_for_error_unpopulated():
+def test_fuzz_query_vault_for_error_unpopulated() -> None:
     """Test RAG query against unpopulated / missing ChromaDB vault."""
     with tempfile.TemporaryDirectory() as tmpdir:
         os.environ["COCHEM_ARTIFACT_DIR"] = tmpdir
@@ -186,9 +186,9 @@ def test_fuzz_query_vault_for_error_unpopulated():
 # 5. Stress Testing OracleEngine Async & Activation
 # =====================================================================
 
-def test_fuzz_oracle_engine_lifecycle():
+def test_fuzz_oracle_engine_lifecycle() -> None:
     """Stress test OracleEngine lifecycle, queries, and fallback rendering."""
-    async def _run():
+    async def _run() -> None:
         engine = OracleEngine()
         assert not engine.is_active
 
@@ -221,7 +221,7 @@ def test_fuzz_oracle_engine_lifecycle():
 # 6. Stress Testing Log Scrubber & Telemetry Sanitizer
 # =====================================================================
 
-def test_fuzz_telemetry_sanitizer():
+def test_fuzz_telemetry_sanitizer() -> None:
     """Stress test TelemetrySanitizer with edge cases."""
     sanitizer = TelemetrySanitizer()
 
@@ -243,14 +243,14 @@ def test_fuzz_telemetry_sanitizer():
 # 7. Stress Testing Knowledge Sync & Chunker
 # =====================================================================
 
-def test_fuzz_semantic_chunker():
+def test_fuzz_semantic_chunker() -> None:
     """Fuzz semantic chunker with code fences, missing headers, and strange markdown."""
     text_with_code = """# Header 1
 Some documentation text.
 
 ```python
 # This is a comment inside Python code block
-def foo():
+def foo() -> None:
     pass
 ```
 
@@ -261,4 +261,4 @@ More text #tag1 #tag2.
     assert len(chunks) >= 1
     # Code block hash comment should not split the chunk
     full_chunk_text = " ".join([c["text"] for c in chunks])
-    assert "def foo():" in full_chunk_text
+    assert "def foo() -> None:" in full_chunk_text

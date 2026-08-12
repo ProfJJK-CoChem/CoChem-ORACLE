@@ -27,18 +27,23 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
+import logging
+
+logger = logging.getLogger("CoChem_Log_Scrubber")
+
+
 def print_status(msg: str, status: str = "info") -> None:
     if status == "success":
-        print(f" {Colors.OKGREEN}✅ {msg}{Colors.ENDC}")
+        logger.info(f"✅ {msg}")
     elif status == "warning":
-        print(f" {Colors.WARNING}⚠️ {msg}{Colors.ENDC}")
+        logger.warning(f"⚠️ {msg}")
     elif status == "fail":
-        print(f" {Colors.FAIL}❌ {msg}{Colors.ENDC}")
+        logger.error(f"❌ {msg}")
     else:
-        print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
+        logger.info(f"➡️ {msg}")
 
 class TelemetrySanitizer:
-    def __init__(self):
+    def __init__(self) -> None:
         # 1. Matches standard XYZ coordinate lines: C  -1.23456  0.00000  2.34567
         self.xyz_pattern = re.compile(
             r'([A-Za-z]{1,2})\s+(-?\d+\.\d{3,})\s+(-?\d+\.\d{3,})\s+(-?\d+\.\d{3,})'
@@ -89,7 +94,7 @@ class TelemetrySanitizer:
         clean_text = self.float_matrix_pattern.sub(r'\n[REDACTED_FLOAT_MATRIX]\n', clean_text)
         
         # Strip SMILES strings with RDKit syntax validation (ORACLE-14)
-        def replace_smiles(match):
+        def replace_smiles(match: Any) -> str:
             candidate = match.group(1)
             if self._is_valid_smiles(candidate):
                 return '[REDACTED_SMILES_STRING]'
@@ -160,8 +165,8 @@ def export_telemetry(chat_history: List[Dict[str, str]], export_dir: str = None)
         print_status(f"Telemetry export failed: {e}", "fail")
         return ""
 
-def main():
-    print(f"\n{Colors.BOLD}--- CoChem-ORACLE: SHIELD Telemetry Test ---{Colors.ENDC}")
+def main() -> None:
+    logger.info("--- CoChem-ORACLE: SHIELD Telemetry Test ---")
     
     mock_chat = [
         {"role": "user", "content": "Why did my ORCA job fail? Here is my input:\n* xyz 0 1\nC -1.23456 0.12345 1.11111\nO 0.00000 1.23456 -1.22222\n*\nIt says SCF failed."},

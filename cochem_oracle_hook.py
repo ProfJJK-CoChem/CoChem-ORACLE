@@ -25,15 +25,18 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
+logger = logging.getLogger("CoChem_ORACLE_Hook")
+
+
 def print_status(msg: str, status: str = "info") -> None:
     if status == "success":
-        print(f" {Colors.OKGREEN}✅ {msg}{Colors.ENDC}")
+        logger.info(f"✅ {msg}")
     elif status == "warning":
-        print(f" {Colors.WARNING}⚠️ {msg}{Colors.ENDC}")
+        logger.warning(f"⚠️ {msg}")
     elif status == "fail":
-        print(f" {Colors.FAIL}❌ {msg}{Colors.ENDC}")
+        logger.error(f"❌ {msg}")
     else:
-        print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
+        logger.info(f"➡️ {msg}")
 
 # ---------------------------------------------------------
 # SYSTEM STATE & CONFIGURATION
@@ -48,7 +51,7 @@ def load_system_state() -> Dict:
         
     try:
         with open(state_path, "r") as f:
-            return json.load(f)
+            return json.loads(f.read())
     except (json.JSONDecodeError, OSError) as e:
         print_status(f"Error reading {state_path}: {e}. Returning default state.", "warning")
         return {"setup_complete": False, "silo_registry": {}}
@@ -67,15 +70,23 @@ def write_final_config(state: Dict) -> None:
 def _query_nvidia_smi_vram() -> float:
     """Queries nvidia-smi for total GPU VRAM in GB via XML output (MOCK-20, Suggestion 78)."""
     try:
-        result = subprocess.run(
+        from core_engine.cochem_core_subprocess_broker import safe_subprocess_run
+    except ImportError:
+        try:
+            from cochem_core_subprocess_broker import safe_subprocess_run
+        except ImportError:
+            safe_subprocess_run = subprocess.run
+
+    try:
+        result = safe_subprocess_run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, timeout=5.0, check=False
         )
         if result.returncode == 0 and result.stdout.strip():
             # nvidia-smi returns MiB; convert to GiB
             total_mib = float(result.stdout.strip().split("\n")[0])
             return round(total_mib / 1024.0, 2)
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError) as err:
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError, Exception) as err:
         logging.debug(f"nvidia-smi VRAM query failed: {err}")
     return 0.0
 
@@ -233,7 +244,7 @@ def hardware_aware_router(num_atoms: int, registry: dict) -> str:
          return "CPU_ORCA"
 
 def main() -> None:
-    print(f"\n{Colors.BOLD}--- Phase 11: Memory Router & Finalization ---{Colors.ENDC}")
+    logger.info("--- Phase 11: Memory Router & Finalization ---")
     try:
         state = load_system_state()
         

@@ -29,7 +29,7 @@ from cochem_log_scrubber import TelemetrySanitizer
 # 1. SPLIT-CONFORMAL INTERVAL BOUND VALIDATION STRESS TESTS
 # ---------------------------------------------------------------------------
 
-def test_conformal_interval_mathematical_invariants_random_dist():
+def test_conformal_interval_mathematical_invariants_random_dist() -> None:
     """Validates split-conformal interval bounds across 1,000 random distances."""
     random.seed(42)
     # Test uniform [0, 1000]
@@ -47,7 +47,7 @@ def test_conformal_interval_mathematical_invariants_random_dist():
             f"Failed invariant for log-distance={dist}: {res}"
 
 
-def test_conformal_interval_extreme_and_boundary_values():
+def test_conformal_interval_extreme_and_boundary_values() -> None:
     """Validates boundary, negative, and extreme float values."""
     boundary_values = [
         0.0, 1e-15, 1e-6, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 100.0,
@@ -59,7 +59,7 @@ def test_conformal_interval_extreme_and_boundary_values():
             f"Failed for extreme distance {dist}: {res}"
 
 
-def test_conformal_interval_custom_confidence():
+def test_conformal_interval_custom_confidence() -> None:
     """Validates behavior under non-default confidence levels."""
     res_90 = compute_split_conformal_interval(0.2, confidence_level=0.90)
     res_99 = compute_split_conformal_interval(0.2, confidence_level=0.99)
@@ -72,7 +72,7 @@ def test_conformal_interval_custom_confidence():
 # 2. STEP 0-6 METHOD ROUTING DECISION TREE FUZZING (10,000 ITERATIONS)
 # ---------------------------------------------------------------------------
 
-def test_step_0_6_routing_decision_tree_fuzzing_10k():
+def test_step_0_6_routing_decision_tree_fuzzing_10k() -> None:
     """Fuzzes route_method_query with 10,000 randomized query parameter combinations."""
     random.seed(2026)
 
@@ -117,7 +117,7 @@ def test_step_0_6_routing_decision_tree_fuzzing_10k():
         assert isinstance(res["answer"], str) and len(res["answer"]) > 0
 
 
-def test_routing_edge_cases_non_dict():
+def test_routing_edge_cases_non_dict() -> None:
     """Tests routing with non-dict input handling."""
     res_none = route_method_query(None)
     assert res_none["product_class"] == "PRODUCT_A"
@@ -132,7 +132,7 @@ def test_routing_edge_cases_non_dict():
 # 3. SECTION 12.5 STANDING ENFORCEMENT RULE STRESS TESTS
 # ---------------------------------------------------------------------------
 
-def test_validate_section_12_5_exhaustive():
+def test_validate_section_12_5_exhaustive() -> None:
     """Tests Section 12.5 validation across compliant and non-compliant matrix."""
     # Compliant: Measured data supporting accuracy claim
     c1 = validate_section_12_5("The accuracy of DLPNO-CCSD(T) is 0.2 kcal/mol [M] against benchmark.")
@@ -160,7 +160,7 @@ def test_validate_section_12_5_exhaustive():
 # 4. TELEMETRY SANITIZER & REGEX WALL STRESS TESTS
 # ---------------------------------------------------------------------------
 
-def test_telemetry_sanitizer_coordinate_matrix_smiles_scrubbing():
+def test_telemetry_sanitizer_coordinate_matrix_smiles_scrubbing() -> None:
     """Validates regex wall scrubbing across 1,000 synthetic inputs."""
     sanitizer = TelemetrySanitizer()
 
@@ -191,7 +191,7 @@ def test_telemetry_sanitizer_coordinate_matrix_smiles_scrubbing():
 # 5. SEMANTIC CHUNKER & SHA-256 HASH STRESS TESTS
 # ---------------------------------------------------------------------------
 
-def test_semantic_chunker_code_block_protection_and_hash_uniqueness():
+def test_semantic_chunker_code_block_protection_and_hash_uniqueness() -> None:
     """Stress tests semantic chunking with code fences and hash uniqueness."""
     sample_md = """
 # System Overview #tag1
@@ -202,7 +202,7 @@ This is the main introduction section.
 
 ```python
 # This is a comment inside code block, not a header
-def foo():
+def foo() -> None:
     x = 10 # another comment
     return x
 ```
@@ -217,7 +217,7 @@ Detailed discussion of optimization strategies.
     # Check that code block comments (#) were NOT split as headers
     code_chunk_found = False
     for chunk in chunks:
-        if "def foo():" in chunk["text"]:
+        if "def foo() -> None:" in chunk["text"]:
             code_chunk_found = True
             assert "# This is a comment inside code block" in chunk["text"]
     assert code_chunk_found, "Code chunk was lost or incorrectly split"
@@ -236,7 +236,7 @@ Detailed discussion of optimization strategies.
 # 6. BRACKETED, CHARGED & ISOTOPIC SMILES REDACTION REGRESSION TESTS
 # ---------------------------------------------------------------------------
 
-def test_telemetry_sanitizer_bracketed_charged_smiles_edge_cases():
+def test_telemetry_sanitizer_bracketed_charged_smiles_edge_cases() -> None:
     """Validates that bracketed, charged, isotopic, chiral, and salt SMILES strings are fully redacted."""
     sanitizer = TelemetrySanitizer()
 

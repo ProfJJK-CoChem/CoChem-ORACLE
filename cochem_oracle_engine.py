@@ -102,8 +102,11 @@ def validate_section_12_5(text: Any) -> Dict[str, Any]:
         "warning": warning
     }
 
+logger = logging.getLogger("CoChem_ORACLE_Engine")
+
+
 class OracleEngine:
-    def __init__(self):
+    def __init__(self) -> None:
         self.llm = None
         self.is_active = False
         self.chat_history: List[Dict[str, str]] = []
@@ -124,28 +127,37 @@ class OracleEngine:
     def _get_model_path(self) -> str:
         """Retrieves the GGUF model path from the authoritative registry."""
         try:
-            with open(CONFIG_PATH, "r") as f:
-                registry = json.load(f)
-                return registry.get("silo_registry", {}).get("oracle_model", "")
-        except (FileNotFoundError, json.JSONDecodeError):
-            return ""
+            from cochem_base.config_loader import load_system_config_dict
+            registry = load_system_config_dict(Path(CONFIG_PATH))
+            return registry.get("silo_registry", {}).get("oracle_model", "")
+        except Exception:
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    registry = json.loads(f.read())
+                    return registry.get("silo_registry", {}).get("oracle_model", "")
+            except (FileNotFoundError, json.JSONDecodeError):
+                return ""
 
     def _load_oracle_config(self) -> Dict[str, Any]:
         """Loads oracle_config.json for LLM-specific settings (seed, temperature, etc.)."""
         try:
-            with open(ORACLE_CONFIG_PATH, "r") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logging.debug(f"oracle_config.json not found or invalid ({e}), using defaults.")
-            return {}
+            from cochem_base.config_loader import load_system_config_dict
+            return load_system_config_dict(Path(ORACLE_CONFIG_PATH))
+        except Exception:
+            try:
+                with open(ORACLE_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    return json.loads(f.read())
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                logging.debug(f"oracle_config.json not found or invalid ({e}), using defaults.")
+                return {}
 
-    def _write_pid(self):
+    def _write_pid(self) -> None:
         """Writes the current OS Process ID so the preemption hook can kill it if needed."""
         os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-        with open(PID_FILE, "w") as f:
+        with open(PID_FILE, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
 
-    def _clear_pid(self):
+    def _clear_pid(self) -> None:
         """Cleans up the PID file upon graceful deactivation."""
         if os.path.exists(PID_FILE):
             try:
@@ -158,17 +170,17 @@ class OracleEngine:
         if self.is_active:
             return True
 
-        print(" [ORACLE]: Booting Ephemeral Engine. Claiming VRAM...")
+        logger.info("[ORACLE]: Booting Ephemeral Engine. Claiming VRAM...")
         
         try:
             from llama_cpp import Llama
         except ImportError:
-            print("⚠️ Warning: 'llama-cpp-python' is not installed. Operating in RAG-only fallback mode.")
+            logger.warning("Warning: 'llama-cpp-python' is not installed. Operating in RAG-only fallback mode.")
             Llama = None
 
         if Llama is None or not self.model_path or not os.path.exists(self.model_path):
             reason = "llama-cpp-python not installed" if Llama is None else f"model file not found at '{self.model_path}'"
-            print(f"⚠️ Warning: {reason}. Operating in RAG-only fallback mode.")
+            logger.warning(f"Warning: {reason}. Operating in RAG-only fallback mode.")
             logging.info(f"ORACLE activated in RAG-only fallback mode (reason: {reason}).")
             self.is_active = True
             self._write_pid()
@@ -195,12 +207,12 @@ class OracleEngine:
             self.chat_history = [{"role": "system", "content": self.system_prompt}]
             return True
         except Exception as e:
-            print(f"❌ Failed to load LLM model into VRAM: {e}")
+            logger.error(f"Failed to load LLM model into VRAM: {e}")
             return False
 
     def deactivate(self) -> None:
         """Wipes the chat state and forcibly unloads the model from VRAM."""
-        print(" [ORACLE]: Deactivating Engine. Wiping ephemeral state and freeing VRAM...")
+        logger.info("[ORACLE]: Deactivating Engine. Wiping ephemeral state and freeing VRAM...")
         self.is_active = False
         self._clear_pid()
         
@@ -343,4 +355,4 @@ class OracleEngine:
 
 if __name__ == "__main__":
     engine = OracleEngine()
-    print("Engine instantiated.")
+    logger.info("Engine instantiated.")
