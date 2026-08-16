@@ -11,7 +11,7 @@ import re
 import json
 import zipfile
 import datetime
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
 
 try:
     from rdkit import Chem

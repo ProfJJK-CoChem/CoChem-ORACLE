@@ -251,7 +251,7 @@ Some documentation text.
 ```python
 # This is a comment inside Python code block
 def foo() -> None:
-    pass
+    raise NotImplementedError("Implementation pending")
 ```
 
 ## Header 2

@@ -11,6 +11,7 @@ import glob
 import re
 import hashlib
 from pathlib import Path
+from typing import Any, List, Dict
 try:
     import chromadb
     from chromadb.config import Settings
