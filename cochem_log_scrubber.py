@@ -72,7 +72,10 @@ class TelemetrySanitizer:
             return False
         if not RDKIT_AVAILABLE:
             # Fallback heuristic: check for explicit bond/bracket/ring/aromatic characters
-            return any(c in candidate for c in ['=', '#', '[', ']', '@', '\\', '/', '(', ')']) or any(c.isdigit() for c in candidate)
+            has_structural_chars = any(c in candidate for c in ['=', '#', '[', ']', '@', '\\', '/']) or any(c.isdigit() for c in candidate)
+            # Require at least one common organic element to avoid matching random punctuated acronyms
+            has_organic_element = any(c in candidate for c in ['C', 'c', 'N', 'n', 'O', 'o', 'P', 'S', 'F', 'Cl', 'Br', 'I'])
+            return has_structural_chars and has_organic_element
         try:
             mol = Chem.MolFromSmiles(candidate)
             return mol is not None
