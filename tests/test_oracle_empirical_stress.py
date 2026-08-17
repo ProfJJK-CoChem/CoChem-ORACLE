@@ -165,24 +165,24 @@ def test_telemetry_sanitizer_coordinate_matrix_smiles_scrubbing() -> None:
     sanitizer = TelemetrySanitizer()
 
     # XYZ scrubbing
-    xyz_sample = "Atom position: C  -1.234567  0.123456  12.345678"
-    clean_xyz = sanitizer.sanitize_text(xyz_sample)
+    xyz_input = "Atom position: C  -1.234567  0.123456  12.345678"
+    clean_xyz = sanitizer.sanitize_text(xyz_input)
     assert "[REDACTED_COORD]" in clean_xyz
     assert "-1.234567" not in clean_xyz
 
     # ORCA block scrubbing
-    orca_sample = "* xyz 0 1\nC 0.0000 0.0000 0.0000\nO 0.0000 0.0000 1.1300\n*"
-    clean_orca = sanitizer.sanitize_text(orca_sample)
+    orca_input = "* xyz 0 1\nC 0.0000 0.0000 0.0000\nO 0.0000 0.0000 1.1300\n*"
+    clean_orca = sanitizer.sanitize_text(orca_input)
     assert "[REDACTED_GEOMETRY_BLOCK]" in clean_orca
 
     # Matrix float block scrubbing
-    matrix_sample = "   0.123456   -1.234567    2.345678    3.456789\n   4.567890   -5.678901    6.789012    7.890123\n"
-    clean_matrix = sanitizer.sanitize_text(matrix_sample)
+    matrix_input = "   0.123456   -1.234567    2.345678    3.456789\n   4.567890   -5.678901    6.789012    7.890123\n"
+    clean_matrix = sanitizer.sanitize_text(matrix_input)
     assert "[REDACTED_FLOAT_MATRIX]" in clean_matrix
 
     # SMILES scrubbing (with explicit rings/bonds)
-    smiles_sample = "Processing SMILES string C1=CC=C(C=C1)O for calculation."
-    clean_smiles = sanitizer.sanitize_text(smiles_sample)
+    smiles_input = "Processing SMILES string C1=CC=C(C=C1)O for calculation."
+    clean_smiles = sanitizer.sanitize_text(smiles_input)
     assert "[REDACTED_SMILES_STRING]" in clean_smiles
     assert "C1=CC=C(C=C1)O" not in clean_smiles
 
@@ -193,7 +193,7 @@ def test_telemetry_sanitizer_coordinate_matrix_smiles_scrubbing() -> None:
 
 def test_semantic_chunker_code_block_protection_and_hash_uniqueness() -> None:
     """Stress tests semantic chunking with code fences and hash uniqueness."""
-    sample_md = """
+    input_md = """
 # System Overview #tag1
 
 This is the main introduction section.
@@ -211,7 +211,7 @@ def foo() -> None:
 
 Detailed discussion of optimization strategies.
 """
-    chunks = semantic_chunker(sample_md, "test_doc.md")
+    chunks = semantic_chunker(input_md, "test_doc.md")
     assert len(chunks) >= 2
 
     # Check that code block comments (#) were NOT split as headers

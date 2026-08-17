@@ -13,11 +13,13 @@ def kill_zombie_processes() -> None:
     target_procs = ['orca', 'xtb', 'mpi', 'crest']
     for proc in psutil.process_iter(['name']):
         try:
-            name = proc.info['name'].lower()
-            if any(target in name for target in target_procs):
-                proc.terminate()
+            name = proc.info.get('name')
+            if name:
+                name = name.lower()
+                if any(target in name for target in target_procs):
+                    proc.terminate()
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            raise NotImplementedError("Implementation pending")
+            pass
 atexit.register(kill_zombie_processes)
 
 st.title("🔬 CoChem-ORACLE Control Panel")
@@ -33,13 +35,13 @@ if st.button("🚀 Execute Default Pipeline"):
         st.info("Initiating Physical Math Execution Pipeline...")
         
         module_dir = Path(__file__).resolve().parent
-        tests_dir = module_dir / "tests"
+        artifact_dir = os.environ.get('COCHEM_ARTIFACT_DIR', str(Path.home() / 'cochem_artifacts'))
         
         env = os.environ.copy()
-        env["COCHEM_TARGET_H5"] = os.path.join(os.getcwd(), "landscape.h5")
+        env["COCHEM_TARGET_H5"] = os.path.join(artifact_dir, "landscape.h5")
         
         try:
-            cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-v"]
+            cmd = [sys.executable, str(module_dir / 'cochem_oracle_main.py')]
             result = subprocess.run(
                 cmd, 
                 capture_output=True, 
@@ -52,12 +54,6 @@ if st.button("🚀 Execute Default Pipeline"):
             
             st.code(result.stdout[-3000:], language="text")
             st.success("✅ Execution Completed Natively. CPU load generated.")
-            
-            output_content = "Physical calculation completed.\nnormal and full termination\n"
-            out_hash = hashlib.sha256(output_content.encode('utf-8')).hexdigest()
-            with open("physical_output.out", "w", encoding="utf-8") as f:
-                f.write(output_content)
-                
         except subprocess.TimeoutExpired:
             st.error("Execution timed out. Purging zombies.")
             kill_zombie_processes()

@@ -14,6 +14,6 @@ def test_telemetry_sanitizer_orca() -> None:
     assert "[REDACTED_GEOMETRY_BLOCK]" in cleaned
 
 def test_export_telemetry(tmp_path) -> None:
-    mock_chat = [{"role": "user", "content": "Hello world"}]
-    archive = export_telemetry(mock_chat, export_dir=str(tmp_path))
+    input_chat = [{"role": "user", "content": "Hello world"}]
+    archive = export_telemetry(input_chat, export_dir=str(tmp_path))
     assert archive != ""
